@@ -203,6 +203,10 @@ func (r *RegisteredTypes) addDefaultTypes() {
 	}})
 	r.mustRegisterAlias("UTF8Type", "varchar")
 
+	r.mustRegisterType(TypeJsonb, "jsonb", SimpleCQLType{varcharLikeTypeInfo{
+		typ: TypeJsonb,
+	}})
+
 	r.mustRegisterType(TypeVarint, "varint", SimpleCQLType{varintTypeInfo{}})
 	r.mustRegisterAlias("IntegerType", "varint")
 
@@ -512,6 +516,10 @@ func (r *RegisteredTypes) fastTypeInfoLookup(typ Type) TypeInfo {
 		return varcharLikeTypeInfo{
 			typ: TypeVarchar,
 		}
+	case TypeJsonb:
+		return varcharLikeTypeInfo{
+			typ: TypeJsonb,
+		}
 	case TypeVarint:
 		return varintTypeInfo{}
 	default:
@@ -656,6 +664,7 @@ const (
 	TypeSet       Type = 0x0022
 	TypeUDT       Type = 0x0030
 	TypeTuple     Type = 0x0031
+	TypeJsonb     Type = 0x0080 // Yugabyte specific
 )
 
 // NewNativeType returns a TypeInfo from the global registered types.
