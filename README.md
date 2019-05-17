@@ -5,6 +5,7 @@ Package gocql implements a fast and robust Cassandra client for the
 Go programming language.
 
 Documentation: https://docs.yugabyte.com/latest/develop/build-apps/go/
+
 Discussions: https://www.yugabyte.com/slack
 
 Supported Versions
