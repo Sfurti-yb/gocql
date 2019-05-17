@@ -38,7 +38,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/apache/cassandra-gocql-driver/v2/internal/lru"
+	"github.com/yugabyte/gocql/internal/lru"
 )
 
 // Session is the interface used by users to interact with the database.
@@ -2486,7 +2486,7 @@ var (
 	ErrUnavailable          = errors.New("unavailable")
 	ErrUnsupported          = errors.New("feature not supported")
 	ErrTooManyStmts         = errors.New("too many statements")
-	ErrUseStmt              = errors.New("use statements aren't supported. Please see https://github.com/apache/cassandra-gocql-driver for explanation.")
+	ErrUseStmt              = errors.New("use statements aren't supported. Please see https://github.com/yugabyte/gocql for explanation.")
 	ErrSessionClosed        = errors.New("session has been closed")
 	ErrNoConnections        = errors.New("gocql: no hosts available in the pool")
 	ErrNoKeyspace           = errors.New("no keyspace provided")

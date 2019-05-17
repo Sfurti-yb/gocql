@@ -32,7 +32,7 @@ import (
 	"reflect"
 	"sync"
 
-	gocql "github.com/apache/cassandra-gocql-driver/v2"
+	"github.com/yugabyte/gocql"
 )
 
 func gen(clause, field string) {
