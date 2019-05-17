@@ -1,16 +1,11 @@
 Apache Cassandra GoCQL Driver
 =====
 
-[!Join the chat at https://the-asf.slack.com/archives/C05LPRVNZV1](https://the-asf.slack.com/archives/C05LPRVNZV1)
-![go build](https://github.com/apache/cassandra-gocql-driver/actions/workflows/main.yml/badge.svg)
-[![GoDoc](https://pkg.go.dev/github.com/apache/cassandra-gocql-driver/v2?status.svg)](https://pkg.go.dev/github.com/apache/cassandra-gocql-driver/v2)
-
 Package gocql implements a fast and robust Cassandra client for the
 Go programming language.
 
-Project Website: https://cassandra.apache.org<br>
-API documentation: https://pkg.go.dev/github.com/apache/cassandra-gocql-driver/v2<br>
-Discussions: https://cassandra.apache.org/_/community.html#discussions
+Documentation: https://docs.yugabyte.com/latest/develop/build-apps/go/
+Discussions: https://www.yugabyte.com/slack
 
 Supported Versions
 ------------------
