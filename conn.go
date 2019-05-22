@@ -1646,6 +1646,7 @@ func (c *Conn) executeQuery(ctx context.Context, q *internalQuery) *Iter {
 
 		// if the metadata was not present in the response then we should not skip it
 		params.skipMeta = !(c.session.cfg.DisableSkipMetadata || qryOpts.disableSkipMetadata) && info != nil && info.response.flags&flagNoMetaData == 0
+		params.skipMeta = false // Temporary workaround for https://github.com/YugaByte/yugabyte-db/issues/1312
 
 		frame = &writeExecuteFrame{
 			preparedID:       info.id,
