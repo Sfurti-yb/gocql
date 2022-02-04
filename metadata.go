@@ -2032,7 +2032,6 @@ func getFunctionsMetadataFromIter(session *Session, iter *Iter) (map[string][]Fu
 			&function.Name,
 			&function.argumentTypesRaw,
 			&function.ArgumentNames,
-			&function.Body,
 			&function.CalledOnNullInput,
 			&function.Language,
 			&function.returnTypeRaw,
@@ -2081,7 +2080,6 @@ func getAggregatesMetadata(session *Session, keyspaceName string) ([]AggregateMe
 			argument_types,
 			final_func,
 			initcond,
-			return_type,
 			state_func,
 			state_type
 		FROM %s
@@ -2115,7 +2113,6 @@ func getAllAggregatesMetadata(session *Session) (map[string][]AggregateMetadata,
 			argument_types,
 			final_func,
 			initcond,
-			return_type,
 			state_func,
 			state_type
 		FROM %s`, tableName)
@@ -2140,7 +2137,6 @@ func getAggregatesMetadataFromIter(session *Session, iter *Iter) (map[string][]A
 			&aggregate.argumentTypesRaw,
 			&aggregate.finalFunc,
 			&aggregate.InitCond,
-			&aggregate.returnTypeRaw,
 			&aggregate.stateFunc,
 			&aggregate.stateTypeRaw,
 		)
