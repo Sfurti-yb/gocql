@@ -123,6 +123,7 @@ func (s *Session) handleEvent(framer *framer) {
 	case *schemaChangeKeyspace, *schemaChangeFunction,
 		*schemaChangeTable, *schemaChangeAggregate, *schemaChangeType:
 		s.schemaDescriber.debounceRefreshSchemaMetadata()
+		s.hostSource.getClusterPartitionInfo()
 	case *topologyChangeEventFrame, *statusChangeEventFrame:
 		s.nodeEvents.debounce(frame)
 	default:
@@ -151,6 +152,7 @@ func (s *Session) handleNodeEvent(frames []frame) {
 	topologyEventReceived := false
 	// status change events
 	sEvents := make(map[string]*nodeEvent)
+	s.hostSource.getClusterPartitionInfo()
 
 	for _, frame := range frames {
 		switch f := frame.(type) {

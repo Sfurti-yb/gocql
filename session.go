@@ -223,7 +223,7 @@ func NewSession(cfg ClusterConfig) (*Session, error) {
 	s.connCfg = connCfg
 
 	if cfg.PoolConfig.HostSelectionPolicy == nil {
-		cfg.PoolConfig.HostSelectionPolicy = RoundRobinHostPolicy()
+		cfg.PoolConfig.HostSelectionPolicy = YBPartitionAwareHostPolicy(RoundRobinHostPolicy())
 	}
 	s.pool = cfg.PoolConfig.buildPool(s)
 	s.policy = cfg.PoolConfig.HostSelectionPolicy

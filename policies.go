@@ -1,30 +1,10 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-/*
- * Content before git sha 34fdeebefcbf183ed7f916f931aa0586fdaa1b40
- * Copyright (c) 2012, The Gocql authors,
- * provided under the BSD-3-Clause License.
- * See the NOTICE file distributed with this work for additional information.
- */
+// Copyright (c) 2012 The gocql Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 package gocql
 
-// This file will be the future home for more policies
+//This file will be the future home for more policies
 
 import (
 	"context"
@@ -33,9 +13,12 @@ import (
 	"math"
 	"math/rand"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/hailocab/go-hostpool"
 )
 
 // cowHostList implements a copy on write host list, its equivalent type is []*HostInfo
@@ -122,8 +105,6 @@ type RetryableQuery interface {
 	Context() context.Context
 }
 
-// RetryType represents the type of retry that should be performed by the retry policy.
-// Available types: Retry, RetryNextHost, Ignore, Rethrow.
 type RetryType uint16
 
 const (
@@ -153,13 +134,14 @@ type RetryPolicy interface {
 //
 // See below for examples of usage:
 //
-//	//Assign to the cluster
-//	cluster.RetryPolicy = &gocql.SimpleRetryPolicy{NumRetries: 3}
+//     //Assign to the cluster
+//     cluster.RetryPolicy = &gocql.SimpleRetryPolicy{NumRetries: 3}
 //
-//	//Assign to a query
-//	query.RetryPolicy(&gocql.SimpleRetryPolicy{NumRetries: 1})
+//     //Assign to a query
+//     query.RetryPolicy(&gocql.SimpleRetryPolicy{NumRetries: 1})
+//
 type SimpleRetryPolicy struct {
-	NumRetries int // Number of times to retry a query
+	NumRetries int //Number of times to retry a query
 }
 
 // Attempt tells gocql to attempt the query again based on query.Attempts being less
@@ -267,9 +249,6 @@ func (e *ExponentialBackoffRetryPolicy) napTime(attempts int) time.Duration {
 	return getExponentialTime(e.Min, e.Max, attempts)
 }
 
-// HostStateNotifier is an interface for notifying about host state changes.
-// It allows host selection policies to be informed when hosts are added, removed,
-// or change their availability status.
 type HostStateNotifier interface {
 	AddHost(host *HostInfo)
 	RemoveHost(host *HostInfo)
@@ -277,67 +256,24 @@ type HostStateNotifier interface {
 	HostDown(host *HostInfo)
 }
 
-// KeyspaceUpdateEvent represents a keyspace change event.
-// It contains information about which keyspace changed and what type of change occurred.
 type KeyspaceUpdateEvent struct {
 	Keyspace string
 	Change   string
 }
 
-type HostTierer interface {
-	// HostTier returns an integer specifying how far a host is from the client.
-	// Tier must start at 0.
-	// The value is used to prioritize closer hosts during host selection.
-	// For example this could be:
-	// 0 - local rack, 1 - local DC, 2 - remote DC
-	// or:
-	// 0 - local DC, 1 - remote DC
-	HostTier(host *HostInfo) uint
-
-	// This function returns the maximum possible host tier
-	MaxHostTier() uint
-}
-
 // HostSelectionPolicy is an interface for selecting
 // the most appropriate host to execute a given query.
-// HostSelectionPolicy instances cannot be shared between sessions.
 type HostSelectionPolicy interface {
 	HostStateNotifier
 	SetPartitioner
-
-	// KeyspaceChanged is called when the driver receives a keyspace change event.
 	KeyspaceChanged(KeyspaceUpdateEvent)
-
-	// Init is called automatically during session creation so the policy can store
-	// a reference to the attached session. Notably the session is not usable yet
-	// when it's passed to this method.
 	Init(*Session)
-
-	// IsLocal should return true if the given Host is considered "local" by some
-	// criteria. "Local" hosts are preferred over non-local hosts.
 	IsLocal(host *HostInfo) bool
-
 	// Pick returns an iteration function over selected hosts.
 	// Multiple attempts of a single query execution won't call the returned NextHost function concurrently,
 	// so it's safe to have internal state without additional synchronization as long as every call to Pick returns
 	// a different instance of NextHost.
-	Pick(statement ExecutableStatement) NextHost
-}
-
-// schemaRefreshNotifier is an optional interface that can be implemented by HostSelectionPolicy
-// to receive notifications when schema metadata has been refreshed.
-//
-// When a policy implements this interface, it will receive the complete schema metadata
-// via schemaRefreshed() instead of individual KeyspaceChanged() events for each keyspace
-// that was created, dropped, or updated. This allows policies to perform batch updates
-// or optimizations when processing schema changes.
-//
-// This is particularly useful for policies like TokenAwareHostPolicy that need to update
-// their internal replica mappings based on keyspace metadata changes.
-type schemaRefreshNotifier interface {
-	// schemaRefreshed is called after schema metadata has been successfully refreshed.
-	// The meta parameter contains the complete, updated schema metadata for all keyspaces.
-	schemaRefreshed(meta *schemaMeta)
+	Pick(ExecutableQuery) NextHost
 }
 
 // SelectedHost is an interface returned when picking a host from a host
@@ -356,7 +292,6 @@ func (host *selectedHost) Info() *HostInfo {
 func (host *selectedHost) Mark(err error) {}
 
 // NextHost is an iteration function over picked hosts
-// Should return nil eventually to prevent endless query execution.
 type NextHost func() SelectedHost
 
 // RoundRobinHostPolicy is a round-robin load balancing policy, where each host
@@ -375,7 +310,7 @@ func (r *roundRobinHostPolicy) KeyspaceChanged(KeyspaceUpdateEvent) {}
 func (r *roundRobinHostPolicy) SetPartitioner(partitioner string)   {}
 func (r *roundRobinHostPolicy) Init(*Session)                       {}
 
-func (r *roundRobinHostPolicy) Pick(qry ExecutableStatement) NextHost {
+func (r *roundRobinHostPolicy) Pick(qry ExecutableQuery) NextHost {
 	nextStartOffset := atomic.AddUint64(&r.lastUsedHostIdx, 1)
 	return roundRobbin(int(nextStartOffset), r.hosts.get())
 }
@@ -396,21 +331,9 @@ func (r *roundRobinHostPolicy) HostDown(host *HostInfo) {
 	r.RemoveHost(host)
 }
 
-// ShuffleReplicas returns an option function to enable shuffling of replicas in token-aware host selection.
-// When enabled, the set of replicas for a partition key will be traversed in randomized order.
 func ShuffleReplicas() func(*tokenAwareHostPolicy) {
 	return func(t *tokenAwareHostPolicy) {
 		t.shuffleReplicas = true
-		t.shuffleDecisionExplicit = true
-	}
-}
-
-// DoNotShuffleReplicas returns an option function to disable shuffling of replicas in token-aware host selection.
-// When disabled, replicas are traversed in their natural (token ring) order.
-func DoNotShuffleReplicas() func(*tokenAwareHostPolicy) {
-	return func(t *tokenAwareHostPolicy) {
-		t.shuffleReplicas = false
-		t.shuffleDecisionExplicit = true
 	}
 }
 
@@ -424,19 +347,6 @@ func NonLocalReplicasFallback() func(policy *tokenAwareHostPolicy) {
 	return func(t *tokenAwareHostPolicy) {
 		t.nonLocalReplicasFallback = true
 	}
-}
-
-// ShuffledTokenAwareHostPolicy is a token aware host selection policy that shuffles replicas.
-func ShuffledTokenAwareHostPolicy(fallback HostSelectionPolicy, opts ...func(*tokenAwareHostPolicy)) HostSelectionPolicy {
-	p := &tokenAwareHostPolicy{
-		fallback:                fallback,
-		shuffleReplicas:         true,
-		shuffleDecisionExplicit: true,
-	}
-	for _, opt := range opts {
-		opt(p)
-	}
-	return p
 }
 
 // TokenAwareHostPolicy is a token aware host selection policy, where hosts are
@@ -455,7 +365,7 @@ func TokenAwareHostPolicy(fallback HostSelectionPolicy, opts ...func(*tokenAware
 // so fields should not be modified in-place. Instead, to modify a field a copy of the field should be made
 // and the pointer in clusterMeta updated to point to the new value.
 type clusterMeta struct {
-	// replicas is map[strategyKey]map[token]hosts
+	// replicas is map[keyspace]map[token]hosts
 	replicas  map[string]tokenRingReplicas
 	tokenRing *tokenRing
 }
@@ -464,11 +374,9 @@ type tokenAwareHostPolicy struct {
 	fallback            HostSelectionPolicy
 	getKeyspaceMetadata func(keyspace string) (*KeyspaceMetadata, error)
 	getKeyspaceName     func() string
-	getSchemaMeta       func() *schemaMeta
 
 	shuffleReplicas          bool
 	nonLocalReplicasFallback bool
-	shuffleDecisionExplicit  bool
 
 	// mu protects writes to hosts, partitioner, metadata.
 	// reads can be unlocked as long as they are not used for updating state later.
@@ -477,24 +385,13 @@ type tokenAwareHostPolicy struct {
 	partitioner string
 	metadata    atomic.Value // *clusterMeta
 
-	logger StructuredLogger
+	logger StdLogger
 }
 
 func (t *tokenAwareHostPolicy) Init(s *Session) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.getKeyspaceMetadata != nil {
-		// Init was already called.
-		// See https://github.com/scylladb/gocql/issues/94.
-		panic("sharing token aware host selection policy between sessions is not supported")
-	}
 	t.getKeyspaceMetadata = s.KeyspaceMetadata
 	t.getKeyspaceName = func() string { return s.cfg.Keyspace }
-	t.getSchemaMeta = s.schemaDescriber.getSchemaMetaForRead
 	t.logger = s.logger
-	if !t.shuffleDecisionExplicit {
-		t.logger.Warning("By default, token aware policy doesn't shuffle the replicas which isn't recommended. If this is intentional, use the DoNotShuffleReplicas option to make this warning go away (e.g. TokenAwareHostPolicy(fallbackpolicy, DoNotShuffleReplicas))")
-	}
 }
 
 func (t *tokenAwareHostPolicy) IsLocal(host *HostInfo) bool {
@@ -502,65 +399,35 @@ func (t *tokenAwareHostPolicy) IsLocal(host *HostInfo) bool {
 }
 
 func (t *tokenAwareHostPolicy) KeyspaceChanged(update KeyspaceUpdateEvent) {
-	if update.Change != SchemaChangeTypeDropped {
-		t.updateReplicas(update.Keyspace)
-	}
-}
-
-// updateReplicas updates replicas in clusterMeta for keyspace schema changes.
-// meta must not be nil and it's replicas field will be updated.
-func (t *tokenAwareHostPolicy) updateReplicas(keyspace string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	meta := t.getMetadataReadOnly()
-	ks, err := t.getKeyspaceMetadata(keyspace)
-	if err == nil {
-		strat := ks.placementStrategy
-		if strat != nil {
-			if meta != nil && meta.tokenRing != nil {
-				key := strat.strategyKey()
-				// Only add replica map if strategy key doesn't exist yet.
-				// Multiple keyspaces with identical replication strategies share the same replica map.
-				if _, ok := meta.replicas[key]; !ok {
-					metaUpdate := t.getMetadataForUpdate()
-					newReplicas := make(map[string]tokenRingReplicas, len(meta.replicas))
-					newReplicas[key] = strat.replicaMap(metaUpdate.tokenRing, t.logger)
-					for k, replicas := range metaUpdate.replicas {
-						newReplicas[k] = replicas
-					}
-					metaUpdate.replicas = newReplicas
-					t.metadata.Store(metaUpdate)
-				}
-			}
-		}
-	}
-}
-
-func (t *tokenAwareHostPolicy) schemaRefreshed(schemaMeta *schemaMeta) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	meta := t.getMetadataForUpdate()
-	t.updateAllReplicas(meta, schemaMeta)
+	t.updateReplicas(meta, update.Keyspace)
 	t.metadata.Store(meta)
 }
 
-// updateAllReplicas updates replicas in clusterMeta for schema/topology changes.
+// updateReplicas updates replicas in clusterMeta.
 // It must be called with t.mu mutex locked.
 // meta must not be nil and it's replicas field will be updated.
-func (t *tokenAwareHostPolicy) updateAllReplicas(meta *clusterMeta, schemaMeta *schemaMeta) {
-	schema := schemaMeta.keyspaceMeta
-	newReplicas := make(map[string]tokenRingReplicas, len(schema))
-	for _, metadata := range schema {
-		strat := metadata.placementStrategy
+func (t *tokenAwareHostPolicy) updateReplicas(meta *clusterMeta, keyspace string) {
+	newReplicas := make(map[string]tokenRingReplicas, len(meta.replicas))
+
+	ks, err := t.getKeyspaceMetadata(keyspace)
+	if err == nil {
+		strat := getStrategy(ks, t.logger)
 		if strat != nil {
 			if meta != nil && meta.tokenRing != nil {
-				key := strat.strategyKey()
-				if _, ok := newReplicas[key]; !ok {
-					newReplicas[key] = strat.replicaMap(meta.tokenRing, t.logger)
-				}
+				newReplicas[keyspace] = strat.replicaMap(meta.tokenRing)
 			}
 		}
 	}
+
+	for ks, replicas := range meta.replicas {
+		if ks != keyspace {
+			newReplicas[ks] = replicas
+		}
+	}
+
 	meta.replicas = newReplicas
 }
 
@@ -573,9 +440,7 @@ func (t *tokenAwareHostPolicy) SetPartitioner(partitioner string) {
 		t.partitioner = partitioner
 		meta := t.getMetadataForUpdate()
 		meta.resetTokenRing(t.partitioner, t.hosts.get(), t.logger)
-		if t.getSchemaMeta != nil {
-			t.updateAllReplicas(meta, t.getSchemaMeta())
-		}
+		t.updateReplicas(meta, t.getKeyspaceName())
 		t.metadata.Store(meta)
 	}
 }
@@ -585,9 +450,7 @@ func (t *tokenAwareHostPolicy) AddHost(host *HostInfo) {
 	if t.hosts.add(host) {
 		meta := t.getMetadataForUpdate()
 		meta.resetTokenRing(t.partitioner, t.hosts.get(), t.logger)
-		if t.getSchemaMeta != nil {
-			t.updateAllReplicas(meta, t.getSchemaMeta())
-		}
+		t.updateReplicas(meta, t.getKeyspaceName())
 		t.metadata.Store(meta)
 	}
 	t.mu.Unlock()
@@ -604,9 +467,7 @@ func (t *tokenAwareHostPolicy) AddHosts(hosts []*HostInfo) {
 
 	meta := t.getMetadataForUpdate()
 	meta.resetTokenRing(t.partitioner, t.hosts.get(), t.logger)
-	if t.getSchemaMeta != nil {
-		t.updateAllReplicas(meta, t.getSchemaMeta())
-	}
+	t.updateReplicas(meta, t.getKeyspaceName())
 	t.metadata.Store(meta)
 
 	t.mu.Unlock()
@@ -621,9 +482,7 @@ func (t *tokenAwareHostPolicy) RemoveHost(host *HostInfo) {
 	if t.hosts.remove(host.ConnectAddress()) {
 		meta := t.getMetadataForUpdate()
 		meta.resetTokenRing(t.partitioner, t.hosts.get(), t.logger)
-		if t.getSchemaMeta != nil {
-			t.updateAllReplicas(meta, t.getSchemaMeta())
-		}
+		t.updateReplicas(meta, t.getKeyspaceName())
 		t.metadata.Store(meta)
 	}
 	t.mu.Unlock()
@@ -662,7 +521,7 @@ func (t *tokenAwareHostPolicy) getMetadataForUpdate() *clusterMeta {
 
 // resetTokenRing creates a new tokenRing.
 // It must be called with t.mu locked.
-func (m *clusterMeta) resetTokenRing(partitioner string, hosts []*HostInfo, logger StructuredLogger) {
+func (m *clusterMeta) resetTokenRing(partitioner string, hosts []*HostInfo, logger StdLogger) {
 	if partitioner == "" {
 		// partitioner not yet set
 		return
@@ -671,7 +530,7 @@ func (m *clusterMeta) resetTokenRing(partitioner string, hosts []*HostInfo, logg
 	// create a new token ring
 	tokenRing, err := newTokenRing(partitioner, hosts)
 	if err != nil {
-		logger.Warning("Unable to update the token ring due to error.", NewLogFieldError("err", err))
+		logger.Printf("Unable to update the token ring due to error: %s", err)
 		return
 	}
 
@@ -679,7 +538,7 @@ func (m *clusterMeta) resetTokenRing(partitioner string, hosts []*HostInfo, logg
 	m.tokenRing = tokenRing
 }
 
-func (t *tokenAwareHostPolicy) Pick(qry ExecutableStatement) NextHost {
+func (t *tokenAwareHostPolicy) Pick(qry ExecutableQuery) NextHost {
 	if qry == nil {
 		return t.fallback.Pick(qry)
 	}
@@ -697,15 +556,7 @@ func (t *tokenAwareHostPolicy) Pick(qry ExecutableStatement) NextHost {
 	}
 
 	token := meta.tokenRing.partitioner.Hash(routingKey)
-	var ht *hostTokens
-	if t.getSchemaMeta != nil {
-		if ksMeta, ok := t.getSchemaMeta().keyspaceMeta[qry.Keyspace()]; ok {
-			strategy := ksMeta.placementStrategy
-			if strategy != nil {
-				ht = meta.replicas[strategy.strategyKey()].replicasFor(token)
-			}
-		}
-	}
+	ht := meta.replicas[qry.Keyspace()].replicasFor(token)
 
 	var replicas []*HostInfo
 	if ht == nil {
@@ -720,22 +571,9 @@ func (t *tokenAwareHostPolicy) Pick(qry ExecutableStatement) NextHost {
 
 	var (
 		fallbackIter NextHost
-		i, j, k      int
-		remote       [][]*HostInfo
-		tierer       HostTierer
-		tiererOk     bool
-		maxTier      uint
+		i, j         int
+		remote       []*HostInfo
 	)
-
-	if tierer, tiererOk = t.fallback.(HostTierer); tiererOk {
-		maxTier = tierer.MaxHostTier()
-	} else {
-		maxTier = 1
-	}
-
-	if t.nonLocalReplicasFallback {
-		remote = make([][]*HostInfo, maxTier)
-	}
 
 	used := make(map[*HostInfo]bool, len(replicas))
 	return func() SelectedHost {
@@ -743,19 +581,8 @@ func (t *tokenAwareHostPolicy) Pick(qry ExecutableStatement) NextHost {
 			h := replicas[i]
 			i++
 
-			var tier uint
-			if tiererOk {
-				tier = tierer.HostTier(h)
-			} else if t.fallback.IsLocal(h) {
-				tier = 0
-			} else {
-				tier = 1
-			}
-
-			if tier != 0 {
-				if t.nonLocalReplicasFallback {
-					remote[tier-1] = append(remote[tier-1], h)
-				}
+			if !t.fallback.IsLocal(h) {
+				remote = append(remote, h)
 				continue
 			}
 
@@ -766,14 +593,9 @@ func (t *tokenAwareHostPolicy) Pick(qry ExecutableStatement) NextHost {
 		}
 
 		if t.nonLocalReplicasFallback {
-			for j < len(remote) && k < len(remote[j]) {
-				h := remote[j][k]
-				k++
-
-				if k >= len(remote[j]) {
-					j++
-					k = 0
-				}
+			for j < len(remote) {
+				h := remote[j]
+				j++
 
 				if h.IsUp() {
 					used[h] = true
@@ -799,6 +621,394 @@ func (t *tokenAwareHostPolicy) Pick(qry ExecutableStatement) NextHost {
 	}
 }
 
+func YBPartitionAwareHostPolicy(fallback HostSelectionPolicy, opts ...func(*ybPartitionAwareHostPolicy)) HostSelectionPolicy {
+	p := &ybPartitionAwareHostPolicy{fallback: fallback}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
+}
+
+type ybPartitionAwareHostPolicy struct {
+	fallback            HostSelectionPolicy
+	getKeyspaceMetadata func(keyspace string) (*KeyspaceMetadata, error)
+	getKeyspaceName     func() string
+
+	nonLocalReplicasFallback bool
+
+	// mu protects writes to hosts, partitioner, metadata.
+	// reads can be unlocked as long as they are not used for updating state later.
+	mu          sync.Mutex
+	hosts       cowHostList
+	partitioner string
+	metadata    atomic.Value // *clusterMeta
+
+	session *Session
+	logger  StdLogger
+}
+
+func (p *ybPartitionAwareHostPolicy) KeyspaceChanged(update KeyspaceUpdateEvent) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	meta := p.getMetadataForUpdate()
+	p.updateReplicas(meta, update.Keyspace)
+	p.metadata.Store(meta)
+}
+
+func (p *ybPartitionAwareHostPolicy) Init(s *Session) {
+	p.getKeyspaceMetadata = s.KeyspaceMetadata
+	p.getKeyspaceName = func() string { return s.cfg.Keyspace }
+	p.session = s
+	p.logger = s.logger
+}
+
+func (p *ybPartitionAwareHostPolicy) IsLocal(host *HostInfo) bool {
+	return p.fallback.IsLocal(host)
+}
+
+func (p *ybPartitionAwareHostPolicy) getMetadataReadOnly() *clusterMeta {
+	meta, _ := p.metadata.Load().(*clusterMeta)
+	return meta
+}
+
+// getMetadataForUpdate returns clusterMeta suitable for updating.
+// It is a SHALLOW copy of current metadata in case it was already set or new empty clusterMeta otherwise.
+// This function should be called with t.mu mutex locked and the mutex should not be released before
+// storing the new metadata.
+func (p *ybPartitionAwareHostPolicy) getMetadataForUpdate() *clusterMeta {
+	metaReadOnly := p.getMetadataReadOnly()
+	meta := new(clusterMeta)
+	if metaReadOnly != nil {
+		*meta = *metaReadOnly
+	}
+	return meta
+}
+
+func (p *ybPartitionAwareHostPolicy) updateReplicas(meta *clusterMeta, keyspace string) {
+	newReplicas := make(map[string]tokenRingReplicas, len(meta.replicas))
+
+	ks, err := p.getKeyspaceMetadata(keyspace)
+	if err == nil {
+		strat := getStrategy(ks, p.logger)
+		if strat != nil {
+			if meta != nil && meta.tokenRing != nil {
+				newReplicas[keyspace] = strat.replicaMap(meta.tokenRing)
+			}
+		}
+	}
+
+	for ks, replicas := range meta.replicas {
+		if ks != keyspace {
+			newReplicas[ks] = replicas
+		}
+	}
+
+	meta.replicas = newReplicas
+}
+
+func (p *ybPartitionAwareHostPolicy) AddHost(host *HostInfo) {
+	p.mu.Lock()
+	if p.hosts.add(host) {
+		meta := p.getMetadataForUpdate()
+		meta.resetTokenRing(p.partitioner, p.hosts.get(), p.logger)
+		p.updateReplicas(meta, p.getKeyspaceName())
+		p.metadata.Store(meta)
+	}
+	p.mu.Unlock()
+
+	p.fallback.AddHost(host)
+}
+
+func (p *ybPartitionAwareHostPolicy) HostUp(host *HostInfo) {
+	p.fallback.HostUp(host)
+}
+
+func (p *ybPartitionAwareHostPolicy) HostDown(host *HostInfo) {
+	p.fallback.HostDown(host)
+}
+
+func (p *ybPartitionAwareHostPolicy) RemoveHost(host *HostInfo) {
+	p.mu.Lock()
+	if p.hosts.remove(host.ConnectAddress()) {
+		meta := p.getMetadataForUpdate()
+		meta.resetTokenRing(p.partitioner, p.hosts.get(), p.logger)
+		p.updateReplicas(meta, p.getKeyspaceName())
+		p.metadata.Store(meta)
+	}
+	p.mu.Unlock()
+
+	p.fallback.RemoveHost(host)
+}
+
+func (p *ybPartitionAwareHostPolicy) SetPartitioner(partitioner string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.partitioner != partitioner {
+		p.fallback.SetPartitioner(partitioner)
+		p.partitioner = partitioner
+		meta := p.getMetadataForUpdate()
+		meta.resetTokenRing(p.partitioner, p.hosts.get(), p.logger)
+		p.updateReplicas(meta, p.getKeyspaceName())
+		p.metadata.Store(meta)
+	}
+}
+
+func (p *ybPartitionAwareHostPolicy) AddHosts(hosts []*HostInfo) {
+	p.mu.Lock()
+
+	for _, host := range hosts {
+		p.hosts.add(host)
+	}
+
+	meta := p.getMetadataForUpdate()
+	meta.resetTokenRing(p.partitioner, p.hosts.get(), p.logger)
+	p.updateReplicas(meta, p.getKeyspaceName())
+	p.metadata.Store(meta)
+
+	p.mu.Unlock()
+
+	for _, host := range hosts {
+		p.fallback.AddHost(host)
+	}
+}
+
+var CounterForRefresh int = 0
+
+func (p *ybPartitionAwareHostPolicy) Pick(qry ExecutableQuery) NextHost {
+	if qry == nil {
+		return p.fallback.Pick(qry)
+	}
+
+	if CounterForRefresh == 1 {
+		p.session.hostSource.getClusterPartitionInfo()
+		CounterForRefresh = 0
+	}
+
+	routingKey, err := qry.GetRoutingKey()
+	if err != nil {
+		return p.fallback.Pick(qry)
+	} else if routingKey == nil {
+		CounterForRefresh = 1
+		return p.fallback.Pick(qry)
+	}
+
+	key := GetKey(routingKey)
+	var replicas []*HostInfo
+
+	res2 := strings.Split(qry.Keyspace(), ".")
+	if res2 == nil {
+		return p.fallback.Pick(qry)
+	}
+	res3 := strings.Split(res2[1], "(")
+	tablesplitmetadeta := getTableSplitMetadata(res2[0], res3[0])
+
+	if tablesplitmetadeta.partitionMap == nil {
+		p.session.hostSource.getClusterPartitionInfo()
+		tablesplitmetadeta1 := getTableSplitMetadata(res2[0], res3[0])
+		if tablesplitmetadeta1.partitionMap == nil {
+			return p.fallback.Pick(qry)
+		} else {
+			tablesplitmetadeta = tablesplitmetadeta1
+		}
+	}
+
+	start := tablesplitmetadeta.Floor(key)
+	replicas = (tablesplitmetadeta.getHosts(start))
+
+	var (
+		fallbackIter NextHost
+		i, j         int
+		remote       []*HostInfo
+	)
+
+	used := make(map[*HostInfo]bool, len(replicas))
+	return func() SelectedHost {
+		for i < len(replicas) {
+			h := replicas[i]
+			i++
+
+			if !p.fallback.IsLocal(h) {
+				remote = append(remote, h)
+				continue
+			}
+			if h.IsUp() {
+				used[h] = true
+				return (*selectedHost)(h)
+			}
+		}
+
+		if p.nonLocalReplicasFallback {
+			for j < len(remote) {
+				h := remote[j]
+				j++
+
+				if h.IsUp() {
+					used[h] = true
+					return (*selectedHost)(h)
+				}
+			}
+		}
+
+		if fallbackIter == nil {
+			// fallback
+			fallbackIter = p.fallback.Pick(qry)
+		}
+
+		// filter the token aware selected hosts from the fallback hosts
+		for fallbackHost := fallbackIter(); fallbackHost != nil; fallbackHost = fallbackIter() {
+			if !used[fallbackHost.Info()] {
+				used[fallbackHost.Info()] = true
+				return fallbackHost
+			}
+		}
+
+		return nil
+	}
+}
+
+// HostPoolHostPolicy is a host policy which uses the bitly/go-hostpool library
+// to distribute queries between hosts and prevent sending queries to
+// unresponsive hosts. When creating the host pool that is passed to the policy
+// use an empty slice of hosts as the hostpool will be populated later by gocql.
+// See below for examples of usage:
+//
+//     // Create host selection policy using a simple host pool
+//     cluster.PoolConfig.HostSelectionPolicy = HostPoolHostPolicy(hostpool.New(nil))
+//
+//     // Create host selection policy using an epsilon greedy pool
+//     cluster.PoolConfig.HostSelectionPolicy = HostPoolHostPolicy(
+//         hostpool.NewEpsilonGreedy(nil, 0, &hostpool.LinearEpsilonValueCalculator{}),
+//     )
+//
+func HostPoolHostPolicy(hp hostpool.HostPool) HostSelectionPolicy {
+	return &hostPoolHostPolicy{hostMap: map[string]*HostInfo{}, hp: hp}
+}
+
+type hostPoolHostPolicy struct {
+	hp      hostpool.HostPool
+	mu      sync.RWMutex
+	hostMap map[string]*HostInfo
+}
+
+func (r *hostPoolHostPolicy) Init(*Session)                       {}
+func (r *hostPoolHostPolicy) KeyspaceChanged(KeyspaceUpdateEvent) {}
+func (r *hostPoolHostPolicy) SetPartitioner(string)               {}
+func (r *hostPoolHostPolicy) IsLocal(*HostInfo) bool              { return true }
+
+func (r *hostPoolHostPolicy) SetHosts(hosts []*HostInfo) {
+	peers := make([]string, len(hosts))
+	hostMap := make(map[string]*HostInfo, len(hosts))
+
+	for i, host := range hosts {
+		ip := host.ConnectAddress().String()
+		peers[i] = ip
+		hostMap[ip] = host
+	}
+
+	r.mu.Lock()
+	r.hp.SetHosts(peers)
+	r.hostMap = hostMap
+	r.mu.Unlock()
+}
+
+func (r *hostPoolHostPolicy) AddHost(host *HostInfo) {
+	ip := host.ConnectAddress().String()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// If the host addr is present and isn't nil return
+	if h, ok := r.hostMap[ip]; ok && h != nil {
+		return
+	}
+	// otherwise, add the host to the map
+	r.hostMap[ip] = host
+	// and construct a new peer list to give to the HostPool
+	hosts := make([]string, 0, len(r.hostMap))
+	for addr := range r.hostMap {
+		hosts = append(hosts, addr)
+	}
+
+	r.hp.SetHosts(hosts)
+}
+
+func (r *hostPoolHostPolicy) RemoveHost(host *HostInfo) {
+	ip := host.ConnectAddress().String()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, ok := r.hostMap[ip]; !ok {
+		return
+	}
+
+	delete(r.hostMap, ip)
+	hosts := make([]string, 0, len(r.hostMap))
+	for _, host := range r.hostMap {
+		hosts = append(hosts, host.ConnectAddress().String())
+	}
+
+	r.hp.SetHosts(hosts)
+}
+
+func (r *hostPoolHostPolicy) HostUp(host *HostInfo) {
+	r.AddHost(host)
+}
+
+func (r *hostPoolHostPolicy) HostDown(host *HostInfo) {
+	r.RemoveHost(host)
+}
+
+func (r *hostPoolHostPolicy) Pick(qry ExecutableQuery) NextHost {
+	return func() SelectedHost {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+
+		if len(r.hostMap) == 0 {
+			return nil
+		}
+
+		hostR := r.hp.Get()
+		host, ok := r.hostMap[hostR.Host()]
+		if !ok {
+			return nil
+		}
+
+		return selectedHostPoolHost{
+			policy: r,
+			info:   host,
+			hostR:  hostR,
+		}
+	}
+}
+
+// selectedHostPoolHost is a host returned by the hostPoolHostPolicy and
+// implements the SelectedHost interface
+type selectedHostPoolHost struct {
+	policy *hostPoolHostPolicy
+	info   *HostInfo
+	hostR  hostpool.HostPoolResponse
+}
+
+func (host selectedHostPoolHost) Info() *HostInfo {
+	return host.info
+}
+
+func (host selectedHostPoolHost) Mark(err error) {
+	ip := host.info.ConnectAddress().String()
+
+	host.policy.mu.RLock()
+	defer host.policy.mu.RUnlock()
+
+	if _, ok := host.policy.hostMap[ip]; !ok {
+		// host was removed between pick and mark
+		return
+	}
+
+	host.hostR.Mark(err)
+}
+
 type dcAwareRR struct {
 	local           string
 	localHosts      cowHostList
@@ -807,8 +1017,8 @@ type dcAwareRR struct {
 }
 
 // DCAwareRoundRobinPolicy is a host selection policies which will prioritize and
-// return hosts which are in the local datacenter before returning hosts in all
-// other datacenters
+// return hosts which are in the local datacentre before returning hosts in all
+// other datercentres
 func DCAwareRoundRobinPolicy(localDC string) HostSelectionPolicy {
 	return &dcAwareRR{local: localDC}
 }
@@ -853,6 +1063,7 @@ func roundRobbin(shift int, hosts ...[]*HostInfo) NextHost {
 	currentlyObserved := 0
 
 	return func() SelectedHost {
+
 		// iterate over layers
 		for {
 			if currentLayer == len(hosts) {
@@ -881,71 +1092,9 @@ func roundRobbin(shift int, hosts ...[]*HostInfo) NextHost {
 	}
 }
 
-func (d *dcAwareRR) Pick(q ExecutableStatement) NextHost {
+func (d *dcAwareRR) Pick(q ExecutableQuery) NextHost {
 	nextStartOffset := atomic.AddUint64(&d.lastUsedHostIdx, 1)
 	return roundRobbin(int(nextStartOffset), d.localHosts.get(), d.remoteHosts.get())
-}
-
-// RackAwareRoundRobinPolicy is a host selection policies which will prioritize and
-// return hosts which are in the local rack, before hosts in the local datacenter but
-// a different rack, before hosts in all other datacenters
-
-type rackAwareRR struct {
-	// lastUsedHostIdx keeps the index of the last used host.
-	// It is accessed atomically and needs to be aligned to 64 bits, so we
-	// keep it first in the struct. Do not move it or add new struct members
-	// before it.
-	lastUsedHostIdx uint64
-	localDC         string
-	localRack       string
-	hosts           []cowHostList
-}
-
-func RackAwareRoundRobinPolicy(localDC string, localRack string) HostSelectionPolicy {
-	hosts := make([]cowHostList, 3)
-	return &rackAwareRR{localDC: localDC, localRack: localRack, hosts: hosts}
-}
-
-func (d *rackAwareRR) Init(*Session)                       {}
-func (d *rackAwareRR) KeyspaceChanged(KeyspaceUpdateEvent) {}
-func (d *rackAwareRR) SetPartitioner(p string)             {}
-
-func (d *rackAwareRR) MaxHostTier() uint {
-	return 2
-}
-
-func (d *rackAwareRR) HostTier(host *HostInfo) uint {
-	if host.DataCenter() == d.localDC {
-		if host.Rack() == d.localRack {
-			return 0
-		} else {
-			return 1
-		}
-	} else {
-		return 2
-	}
-}
-
-func (d *rackAwareRR) IsLocal(host *HostInfo) bool {
-	return d.HostTier(host) == 0
-}
-
-func (d *rackAwareRR) AddHost(host *HostInfo) {
-	dist := d.HostTier(host)
-	d.hosts[dist].add(host)
-}
-
-func (d *rackAwareRR) RemoveHost(host *HostInfo) {
-	dist := d.HostTier(host)
-	d.hosts[dist].remove(host.ConnectAddress())
-}
-
-func (d *rackAwareRR) HostUp(host *HostInfo)   { d.AddHost(host) }
-func (d *rackAwareRR) HostDown(host *HostInfo) { d.RemoveHost(host) }
-
-func (d *rackAwareRR) Pick(q ExecutableStatement) NextHost {
-	nextStartOffset := atomic.AddUint64(&d.lastUsedHostIdx, 1)
-	return roundRobbin(int(nextStartOffset), d.hosts[0].get(), d.hosts[1].get(), d.hosts[2].get())
 }
 
 // ReadyPolicy defines a policy for when a HostSelectionPolicy can be used. After
@@ -998,13 +1147,14 @@ func (s *singleHostReadyPolicy) Ready() bool {
 type ConvictionPolicy interface {
 	// Implementations should return `true` if the host should be convicted, `false` otherwise.
 	AddFailure(error error, host *HostInfo) bool
-	// Implementations should clear out any convictions or state regarding the host.
+	//Implementations should clear out any convictions or state regarding the host.
 	Reset(host *HostInfo)
 }
 
 // SimpleConvictionPolicy implements a ConvictionPolicy which convicts all hosts
 // regardless of error
-type SimpleConvictionPolicy struct{}
+type SimpleConvictionPolicy struct {
+}
 
 func (e *SimpleConvictionPolicy) AddFailure(error error, host *HostInfo) bool {
 	return true
@@ -1015,6 +1165,7 @@ func (e *SimpleConvictionPolicy) Reset(host *HostInfo) {}
 // ReconnectionPolicy interface is used by gocql to determine if reconnection
 // can be attempted after connection error. The interface allows gocql users
 // to implement their own logic to determine how to attempt reconnection.
+//
 type ReconnectionPolicy interface {
 	GetInterval(currentRetry int) time.Duration
 	GetMaxRetries() int
@@ -1024,7 +1175,8 @@ type ReconnectionPolicy interface {
 //
 // Examples of usage:
 //
-//	cluster.ReconnectionPolicy = &gocql.ConstantReconnectionPolicy{MaxRetries: 10, Interval: 8 * time.Second}
+//     cluster.ReconnectionPolicy = &gocql.ConstantReconnectionPolicy{MaxRetries: 10, Interval: 8 * time.Second}
+//
 type ConstantReconnectionPolicy struct {
 	MaxRetries int
 	Interval   time.Duration
@@ -1057,22 +1209,16 @@ func (e *ExponentialReconnectionPolicy) GetMaxRetries() int {
 	return e.MaxRetries
 }
 
-// SpeculativeExecutionPolicy defines the interface for speculative execution policies.
-// These policies determine when and how many speculative queries to execute.
 type SpeculativeExecutionPolicy interface {
 	Attempts() int
 	Delay() time.Duration
 }
 
-// NonSpeculativeExecution is a policy that disables speculative execution.
-// It implements SpeculativeExecutionPolicy with zero attempts.
 type NonSpeculativeExecution struct{}
 
 func (sp NonSpeculativeExecution) Attempts() int        { return 0 } // No additional attempts
 func (sp NonSpeculativeExecution) Delay() time.Duration { return 1 } // The delay. Must be positive to be used in a ticker.
 
-// SimpleSpeculativeExecution is a policy that enables speculative execution
-// with a fixed number of attempts and delay.
 type SimpleSpeculativeExecution struct {
 	NumAttempts  int
 	TimeoutDelay time.Duration
