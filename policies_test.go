@@ -1,43 +1,309 @@
-//go:build all || unit
-// +build all unit
-
 // Copyright (c) 2015 The gocql Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-/*
- * Content before git sha 34fdeebefcbf183ed7f916f931aa0586fdaa1b40
- * Copyright (c) 2016, The Gocql authors,
- * provided under the BSD-3-Clause License.
- * See the NOTICE file distributed with this work for additional information.
- */
-
 package gocql
 
 import (
+	"errors"
+	"fmt"
+	"io/ioutil"
 	"net"
-	"sort"
+	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/hailocab/go-hostpool"
+	inf "gopkg.in/inf.v0"
 )
+
+func OnPage(link string, t *testing.T) string {
+	res, err := http.Get(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := ioutil.ReadAll(res.Body)
+	res.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(content)
+}
+
+func localReadandWrite(s string, t *testing.T) (int, int) {
+
+	value := strings.Index(s, "handler_latency_yb_client_read_local")
+	line := s[value+70:]
+	l := strings.Split(line, ",")
+	read, err := strconv.Atoi(l[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	value1 := strings.Index(s, "handler_latency_yb_client_write_local")
+	line1 := s[value1+71:]
+	l1 := strings.Split(line1, ",")
+	write, err := strconv.Atoi(l1[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return read, write
+}
+
+//Test of PartitionAwarePolicy, to see if it routes query to the correct host
+
+// With PartitionAwarePolicy, all calls should be local ideally but there is no
+// 100% guarantee
+// because as soon as the test table has been created and the partition metadata
+// has been
+// loaded, the cluster's load-balancer may still be rebalancing the leaders.
+//It may happen that the Test Fail sometimes do to above reason but should pass Majority of the times
+func TestHostRouting(t *testing.T) {
+	//change the ip address according to the cluster
+	cluster := NewCluster("127.0.0.3")
+	cluster.PoolConfig.HostSelectionPolicy = YBPartitionAwareHostPolicy(RoundRobinHostPolicy())
+
+	session, _ := cluster.CreateSession()
+	defer session.Close()
+
+	hosts, _, err := session.hostSource.GetHosts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var (
+		Beforeread  int = 0
+		Beforewrite int = 0
+		Totalread   int = 0
+		Totalwrite  int = 0
+	)
+	for i := 0; i < len(hosts); i++ {
+		s := "http://" + hosts[i].connectAddress.String() + ":9000/metrics"
+		content := OnPage(s, t)
+		read, write := localReadandWrite(content, t)
+		Beforeread += read
+		Beforewrite += write
+	}
+
+	NUM_KEYS := 100
+	//create keyspace
+	var createStmtk = "create keyspace IF NOT EXISTS example"
+	if err := session.Query(createStmtk).Exec(); err != nil {
+
+		t.Fatal(err)
+	}
+
+	//Datatype Text, Composite Partition Key
+	// Create test table.
+	var createStmt1 = "create table IF NOT EXISTS example.testtext2 (h1 text, h2 text, c int, primary key ((h1,h2)));"
+	session.Query(createStmt1).Exec()
+
+	//Datatype: float and double, Composite Partition Key
+	// Create test table.
+	var createStmt = "create table IF NOT EXISTS example.testfloat2 (h1 float, h2 double, c int, primary key ((h1, h2)));"
+	session.Query(createStmt).Exec()
+
+	time.Sleep(5 * time.Second)
+
+	stmt := session.Query("insert into example.testtext2 (h1, h2, c) values (?, ?, ?)", strconv.Itoa(1), strconv.Itoa(1), 1).Exec()
+	if stmt != nil {
+		t.Fatal(stmt)
+	}
+
+	time.Sleep(15 * time.Second)
+
+	for i := 2; i <= NUM_KEYS; i++ {
+		stmt := session.Query("insert into example.testtext2 (h1, h2, c) values (?, ?, ?)", strconv.Itoa(i), strconv.Itoa(i), i).Exec()
+		if stmt != nil {
+			t.Fatal(stmt)
+		}
+	}
+
+	for i := 1; i <= NUM_KEYS; i++ {
+		stmt := session.Query("update example.testtext2 set c = ? where h2 = ? and h1 = ?", i*2, strconv.Itoa(i), strconv.Itoa(i)).Exec()
+		if stmt != nil {
+			t.Fatal(stmt)
+		}
+	}
+
+	for i := 1; i <= NUM_KEYS; i++ {
+		stmt := session.Query(`select c from example.testtext2 where h2 = ? and h1 = ?`, strconv.Itoa(i), strconv.Itoa(i)).Iter()
+		if stmt == nil {
+			t.Fatal(stmt)
+		}
+		var c int
+		stmt.Scan(&c)
+		assertEqual(t, "c value", 2*i, c)
+	}
+
+	for i := 1; i <= NUM_KEYS; i++ {
+		stmt := session.Query(" delete from example.testtext2 where h2 = ? and h1 = ?", strconv.Itoa(i), strconv.Itoa(i)).Exec()
+		if stmt != nil {
+			t.Fatal(stmt)
+		}
+	}
+
+	for i := 1; i <= NUM_KEYS; i++ {
+		stmt := session.Query("insert into example.testfloat2 (h1, h2, c) values (?, ?, ?)", float32(i), float64(i)+1.070701, i).Exec()
+		if stmt != nil {
+			t.Fatal(stmt)
+		}
+	}
+
+	for i := 1; i <= NUM_KEYS; i++ {
+		stmt := session.Query("update example.testfloat2 set c = ? where h1 = ? and h2 = ?", i*2, float32(i), float64(i)+1.070701).Exec()
+		if stmt != nil {
+			t.Fatal(stmt)
+		}
+	}
+
+	for i := 1; i <= NUM_KEYS; i++ {
+		stmt := session.Query(`select c from example.testfloat2 where h1 = ? and h2 = ?`, float32(i), float64(i)+1.070701).Iter()
+		if stmt == nil {
+			t.Fatal(stmt)
+		}
+		var c int
+		stmt.Scan(&c)
+		assertEqual(t, "c value", 2*i, c)
+	}
+
+	for i := 1; i <= NUM_KEYS; i++ {
+		stmt := session.Query(" delete from example.testfloat2 where h1 = ? and h2 = ?", float32(i), float64(i)+1.070701).Exec()
+		if stmt != nil {
+			t.Fatal(stmt)
+		}
+	}
+
+	for i := 0; i < len(hosts); i++ {
+		s := "http://" + hosts[i].connectAddress.String() + ":9000/metrics"
+		content := OnPage(s, t)
+		read, write := localReadandWrite(content, t)
+		Totalread += read
+		Totalwrite += write
+	}
+
+	Totalread -= Beforeread
+	Totalwrite -= Beforewrite
+
+	if Totalread < (NUM_KEYS*7*2)/10 && Totalwrite < (NUM_KEYS*6*7)/10 {
+		t.Fatalf("Less number of local read or write are happening, local read = %d, local write = %d ", Totalread, Totalwrite)
+	}
+
+}
+
+func check(q *Query, i int64, t *testing.T) {
+	key, err := q.GetRoutingKeyyb()
+	if err != nil || len(key) == 0 {
+		t.Fatal(err)
+	}
+	Key := GetKey(key)
+	if Key != i {
+		t.Fatalf("expected %d key value got %d", i, Key)
+	}
+}
+
+func createTables(t *testing.T, s *Session) {
+
+	createStmt := "CREATE Keyspace IF NOT EXISTS ybdemo;"
+	s.Query(createStmt).Exec()
+
+	createStmt = "CREATE Keyspace IF NOT EXISTS example;"
+	s.Query(createStmt).Exec()
+
+	createStmt = "CREATE TABLE IF NOT EXISTS ybdemo.employee (id int PRIMARY KEY, name varchar, age int, language varchar);"
+	s.Query(createStmt).Exec()
+
+	createStmt = "create table IF NOT EXISTS example.test_int_2 (h1 int, h2 text, h3 int, c int, primary key ((h1,h2),h3));"
+	s.Query(createStmt).Exec()
+
+	createStmt = "create table IF NOT EXISTS example.test_decimal_2 (h1 decimal, h2 text, h3 int, c int, primary key ((h1,h2),h3));"
+	s.Query(createStmt).Exec()
+
+	createStmt = "create table IF NOT EXISTS example.test_time_1 (h1 timestamp, h2 text, h3 int, c int, primary key (h1,h2,h3));"
+	s.Query(createStmt).Exec()
+
+	createStmt = "create table IF NOT EXISTS example.test_date_2 (h1 date, h2 text, h3 int, c int, primary key ((h1,h2),h3));"
+	s.Query(createStmt).Exec()
+
+	createStmt = "create table IF NOT EXISTS example.test_uuid_2 (h1 uuid, h2 text, h3 int, c int, primary key ((h1,h2),h3));"
+	s.Query(createStmt).Exec()
+
+	createStmt = "create table IF NOT EXISTS example.test_inet_2 (h1 inet, h2 text, h3 int, c int, primary key ((h1,h2),h3));"
+	s.Query(createStmt).Exec()
+
+	createStmt = "create table IF NOT EXISTS example.test_bool_2 (h1 boolean, h2 text, h3 int, c int, primary key ((h1,h2),h3));"
+	s.Query(createStmt).Exec()
+
+	createStmt = "create table IF NOT EXISTS example.test_tinyint_2 (h1 tinyint, h2 text, h3 int, c int, primary key ((h1,h2),h3));"
+	s.Query(createStmt).Exec()
+
+	createStmt = "create table IF NOT EXISTS example.test_smallint_2 (h1 smallint, h2 text, h3 int, c int, primary key ((h1,h2),h3));"
+	s.Query(createStmt).Exec()
+
+}
+
+//Test of Getkey function written for PartitionAwarePolicy
+func TestGetKey(t *testing.T) {
+	//change the ip address according to the cluster
+	cluster := NewCluster("127.0.0.1")
+	cluster.PoolConfig.HostSelectionPolicy = YBPartitionAwareHostPolicy(RoundRobinHostPolicy())
+
+	session, _ := cluster.CreateSession()
+	defer session.Close()
+
+	createTables(t, session)
+	time.Sleep(10 * time.Second)
+
+	//int single partition key
+	qry1 := session.Query("SELECT name, age, language FROM ybdemo.employee WHERE id = ?", 1)
+	check(qry1, 4624, t)
+
+	//int composite partition key
+	qry2 := session.Query("select c from example.test_int_2 where h1 = ? and h2= ?", 100, "100")
+	check(qry2, 46090, t)
+
+	//decimal composite partition key
+	qry3 := session.Query("select c from example.test_decimal_2 where h1 = ? and h2 = ?", inf.NewDec(int64(90), 0), strconv.Itoa(90))
+	check(qry3, 57745, t)
+
+	//timestamp composite partition key
+	t1, err := time.Parse("2006-01-02 15:04:05.000", "2011-02-03 12:12:12.555")
+	if err != nil {
+		t.Fatal(err)
+	}
+	qry4 := session.Query("select c from example.test_time_1 where h1 = ?", t1)
+	check(qry4, 37279, t)
+
+	//date composite partition key
+	t2, err := time.Parse("2006-01-02", "2011-02-03")
+	if err != nil {
+		t.Fatal(err)
+	}
+	qry5 := session.Query("select c from example.test_date_2 where h1 = ? and h2 = ?", t2, "o")
+	check(qry5, 32877, t)
+
+	//uuid composite partition key
+	qry6 := session.Query("select c from example.test_uuid_2 where h1 = ? and h2 = ?", "123e4567-e89b-12d3-a456-426614174000", "o")
+	check(qry6, 38835, t)
+
+	//inet composite partition key
+	qry7 := session.Query("select c from example.test_inet_2 where h1 = ? and h2 = ?", "127.0.0.1", "o")
+	check(qry7, 16064, t)
+
+	//bool composite partition key
+	qry8 := session.Query("select c from example.test_bool_2 where h1 = ? and h2 = ?", false, "o")
+	check(qry8, 57256, t)
+
+	//tinyint composite partition key
+	qry9 := session.Query("select c from example.test_tinyint_2 where h1 = ? and h2 = ?", 1, "o")
+	check(qry9, 48500, t)
+
+	//Smallint composite partition key
+	qry10 := session.Query("select c from example.test_smallint_2 where h1 = ? and h2 = ?", 2, "o")
+	check(qry10, 26643, t)
+
+}
 
 // Tests of the round-robin host selection policy implementation
 func TestRoundRobbin(t *testing.T) {
@@ -70,26 +336,13 @@ func TestRoundRobbin(t *testing.T) {
 // round-robin host selection policy fallback.
 func TestHostPolicy_TokenAware_SimpleStrategy(t *testing.T) {
 	const keyspace = "myKeyspace"
-	policy := TokenAwareHostPolicy(RoundRobinHostPolicy(), DoNotShuffleReplicas())
+	policy := TokenAwareHostPolicy(RoundRobinHostPolicy())
 	policyInternal := policy.(*tokenAwareHostPolicy)
 	policyInternal.getKeyspaceName = func() string { return keyspace }
-	keyspaceMeta := &KeyspaceMetadata{
-		Name:          keyspace,
-		StrategyClass: "SimpleStrategy",
-		StrategyOptions: map[string]interface{}{
-			"class":              "SimpleStrategy",
-			"replication_factor": 2,
-		},
+	policyInternal.getKeyspaceMetadata = func(ks string) (*KeyspaceMetadata, error) {
+		return nil, errors.New("not initalized")
 	}
-	strategy := getStrategy(keyspaceMeta, nopLoggerSingleton)
-	keyspaceMeta.placementStrategy = strategy
-	policyInternal.getSchemaMeta = func() *schemaMeta {
-		return &schemaMeta{
-			keyspaceMeta: map[string]*KeyspaceMetadata{
-				keyspace: keyspaceMeta,
-			},
-		}
-	}
+
 	query := &Query{}
 	query.getKeyspace = func() string { return keyspace }
 
@@ -115,10 +368,25 @@ func TestHostPolicy_TokenAware_SimpleStrategy(t *testing.T) {
 
 	policy.SetPartitioner("OrderedPartitioner")
 
+	policyInternal.getKeyspaceMetadata = func(keyspaceName string) (*KeyspaceMetadata, error) {
+		if keyspaceName != keyspace {
+			return nil, fmt.Errorf("unknown keyspace: %s", keyspaceName)
+		}
+		return &KeyspaceMetadata{
+			Name:          keyspace,
+			StrategyClass: "SimpleStrategy",
+			StrategyOptions: map[string]interface{}{
+				"class":              "SimpleStrategy",
+				"replication_factor": 2,
+			},
+		}, nil
+	}
+	policy.KeyspaceChanged(KeyspaceUpdateEvent{Keyspace: keyspace})
+
 	// The SimpleStrategy above should generate the following replicas.
 	// It's handy to have as reference here.
 	assertDeepEqual(t, "replicas", map[string]tokenRingReplicas{
-		strategy.strategyKey(): {
+		"myKeyspace": {
 			{orderedToken("00"), []*HostInfo{hosts[0], hosts[1]}},
 			{orderedToken("25"), []*HostInfo{hosts[1], hosts[2]}},
 			{orderedToken("50"), []*HostInfo{hosts[2], hosts[3]}},
@@ -128,13 +396,50 @@ func TestHostPolicy_TokenAware_SimpleStrategy(t *testing.T) {
 
 	// now the token ring is configured
 	query.RoutingKey([]byte("20"))
-	iter = policy.Pick(newInternalQuery(query, nil))
-	// first token-aware hosts
-	expectHosts(t, "hosts[0]", iter, "1")
-	expectHosts(t, "hosts[1]", iter, "2")
-	// then rest of the hosts
-	expectHosts(t, "rest", iter, "0", "3")
-	expectNoMoreHosts(t, iter)
+	iter = policy.Pick(query)
+	iterCheck(t, iter, "1")
+	iterCheck(t, iter, "2")
+}
+
+// Tests of the host pool host selection policy implementation
+func TestHostPolicy_HostPool(t *testing.T) {
+	policy := HostPoolHostPolicy(hostpool.New(nil))
+
+	hosts := []*HostInfo{
+		{hostId: "0", connectAddress: net.IPv4(10, 0, 0, 0)},
+		{hostId: "1", connectAddress: net.IPv4(10, 0, 0, 1)},
+	}
+
+	// Using set host to control the ordering of the hosts as calling "AddHost" iterates the map
+	// which will result in an unpredictable ordering
+	policy.(*hostPoolHostPolicy).SetHosts(hosts)
+
+	// the first host selected is actually at [1], but this is ok for RR
+	// interleaved iteration should always increment the host
+	iter := policy.Pick(nil)
+	actualA := iter()
+	if actualA.Info().HostID() != "0" {
+		t.Errorf("Expected hosts[0] but was hosts[%s]", actualA.Info().HostID())
+	}
+	actualA.Mark(nil)
+
+	actualB := iter()
+	if actualB.Info().HostID() != "1" {
+		t.Errorf("Expected hosts[1] but was hosts[%s]", actualB.Info().HostID())
+	}
+	actualB.Mark(fmt.Errorf("error"))
+
+	actualC := iter()
+	if actualC.Info().HostID() != "0" {
+		t.Errorf("Expected hosts[0] but was hosts[%s]", actualC.Info().HostID())
+	}
+	actualC.Mark(nil)
+
+	actualD := iter()
+	if actualD.Info().HostID() != "0" {
+		t.Errorf("Expected hosts[0] but was hosts[%s]", actualD.Info().HostID())
+	}
+	actualD.Mark(nil)
 }
 
 func TestHostPolicy_RoundRobin_NilHostInfo(t *testing.T) {
@@ -166,6 +471,9 @@ func TestHostPolicy_TokenAware_NilHostInfo(t *testing.T) {
 	policy := TokenAwareHostPolicy(RoundRobinHostPolicy())
 	policyInternal := policy.(*tokenAwareHostPolicy)
 	policyInternal.getKeyspaceName = func() string { return "myKeyspace" }
+	policyInternal.getKeyspaceMetadata = func(ks string) (*KeyspaceMetadata, error) {
+		return nil, errors.New("not initialized")
+	}
 
 	hosts := [...]*HostInfo{
 		{connectAddress: net.IPv4(10, 0, 0, 0), tokens: []string{"00"}},
@@ -182,7 +490,7 @@ func TestHostPolicy_TokenAware_NilHostInfo(t *testing.T) {
 	query.getKeyspace = func() string { return "myKeyspace" }
 	query.RoutingKey([]byte("20"))
 
-	iter := policy.Pick(newInternalQuery(query, nil))
+	iter := policy.Pick(query)
 	next := iter()
 	if next == nil {
 		t.Fatal("got nil host")
@@ -236,7 +544,7 @@ func TestCOWList_Add(t *testing.T) {
 
 // TestSimpleRetryPolicy makes sure that we only allow 1 + numRetries attempts
 func TestSimpleRetryPolicy(t *testing.T) {
-	q := newInternalQuery(&Query{}, nil)
+	q := &Query{}
 
 	// this should allow a total of 3 tries.
 	rt := &SimpleRetryPolicy{NumRetries: 2}
@@ -254,8 +562,7 @@ func TestSimpleRetryPolicy(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		q.metrics = &queryMetrics{totalAttempts: int64(c.attempts)}
-		q.hostMetricsManager = preFilledHostMetricsMetricsManager(map[string]*hostMetrics{"127.0.0.1": {Attempts: c.attempts}})
+		q.metrics = preFilledQueryMetrics(map[string]*hostMetrics{"127.0.0.1": {Attempts: c.attempts}})
 		if c.allow && !rt.Attempt(q) {
 			t.Fatalf("should allow retry after %d attempts", c.attempts)
 		}
@@ -295,7 +602,7 @@ func TestExponentialBackoffPolicy(t *testing.T) {
 
 func TestDowngradingConsistencyRetryPolicy(t *testing.T) {
 
-	q := newInternalQuery(&Query{initialConsistency: LocalQuorum}, nil)
+	q := &Query{cons: LocalQuorum}
 
 	rewt0 := &RequestErrWriteTimeout{
 		Received:  0,
@@ -339,8 +646,7 @@ func TestDowngradingConsistencyRetryPolicy(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		q.metrics = &queryMetrics{totalAttempts: int64(c.attempts)}
-		q.hostMetricsManager = preFilledHostMetricsMetricsManager(map[string]*hostMetrics{"127.0.0.1": {Attempts: c.attempts}})
+		q.metrics = preFilledQueryMetrics(map[string]*hostMetrics{"127.0.0.1": {Attempts: c.attempts}})
 		if c.retryType != rt.GetRetryType(c.err) {
 			t.Fatalf("retry type should be %v", c.retryType)
 		}
@@ -353,50 +659,16 @@ func TestDowngradingConsistencyRetryPolicy(t *testing.T) {
 	}
 }
 
-// expectHosts makes sure that the next len(hostIDs) returned from iter is a permutation of hostIDs.
-func expectHosts(t *testing.T, msg string, iter NextHost, hostIDs ...string) {
+func iterCheck(t *testing.T, iter NextHost, hostID string) {
 	t.Helper()
 
-	expectedHostIDs := make(map[string]struct{}, len(hostIDs))
-	for i := range hostIDs {
-		expectedHostIDs[hostIDs[i]] = struct{}{}
-	}
-
-	expectedStr := func() string {
-		keys := make([]string, 0, len(expectedHostIDs))
-		for k := range expectedHostIDs {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		return strings.Join(keys, ", ")
-	}
-
-	for len(expectedHostIDs) > 0 {
-		host := iter()
-		if host == nil || host.Info() == nil {
-			t.Fatalf("%s: expected hostID one of {%s}, but got nil", msg, expectedStr())
-		}
-		hostID := host.Info().HostID()
-		if _, ok := expectedHostIDs[hostID]; !ok {
-			t.Fatalf("%s: expected host ID one of {%s}, but got %s", msg, expectedStr(), hostID)
-		}
-		delete(expectedHostIDs, hostID)
-	}
-}
-
-func expectNoMoreHosts(t *testing.T, iter NextHost) {
-	t.Helper()
 	host := iter()
-	if host == nil {
-		// success
-		return
+	if host == nil || host.Info() == nil {
+		t.Fatalf("expected hostID %s got nil", hostID)
 	}
-	info := host.Info()
-	if info == nil {
-		t.Fatalf("expected no more hosts, but got host with nil Info()")
-		return
+	if host.Info().HostID() != hostID {
+		t.Fatalf("Expected peer %s but was %s", hostID, host.Info().HostID())
 	}
-	t.Fatalf("expected no more hosts, but got %s", info.HostID())
 }
 
 func TestHostPolicy_DCAwareRR(t *testing.T) {
@@ -453,6 +725,9 @@ func TestHostPolicy_TokenAware(t *testing.T) {
 	policy := TokenAwareHostPolicy(DCAwareRoundRobinPolicy("local"))
 	policyInternal := policy.(*tokenAwareHostPolicy)
 	policyInternal.getKeyspaceName = func() string { return keyspace }
+	policyInternal.getKeyspaceMetadata = func(ks string) (*KeyspaceMetadata, error) {
+		return nil, errors.New("not initialized")
+	}
 
 	query := &Query{}
 	query.getKeyspace = func() string { return keyspace }
@@ -492,36 +767,33 @@ func TestHostPolicy_TokenAware(t *testing.T) {
 	}
 
 	query.RoutingKey([]byte("30"))
-	if actual := policy.Pick(newInternalQuery(query, nil))(); actual == nil {
+	if actual := policy.Pick(query)(); actual == nil {
 		t.Fatal("expected to get host from fallback got nil")
-	}
-
-	keyspaceMeta := &KeyspaceMetadata{
-		Name:          keyspace,
-		StrategyClass: "NetworkTopologyStrategy",
-		StrategyOptions: map[string]interface{}{
-			"class":   "NetworkTopologyStrategy",
-			"local":   1,
-			"remote1": 1,
-			"remote2": 1,
-		},
-	}
-	strategy := getStrategy(keyspaceMeta, nopLoggerSingleton)
-	keyspaceMeta.placementStrategy = strategy
-	policyInternal.getSchemaMeta = func() *schemaMeta {
-		return &schemaMeta{
-			keyspaceMeta: map[string]*KeyspaceMetadata{
-				keyspace: keyspaceMeta,
-			},
-		}
 	}
 
 	policy.SetPartitioner("OrderedPartitioner")
 
+	policyInternal.getKeyspaceMetadata = func(keyspaceName string) (*KeyspaceMetadata, error) {
+		if keyspaceName != keyspace {
+			return nil, fmt.Errorf("unknown keyspace: %s", keyspaceName)
+		}
+		return &KeyspaceMetadata{
+			Name:          keyspace,
+			StrategyClass: "NetworkTopologyStrategy",
+			StrategyOptions: map[string]interface{}{
+				"class":   "NetworkTopologyStrategy",
+				"local":   1,
+				"remote1": 1,
+				"remote2": 1,
+			},
+		}, nil
+	}
+	policy.KeyspaceChanged(KeyspaceUpdateEvent{Keyspace: "myKeyspace"})
+
 	// The NetworkTopologyStrategy above should generate the following replicas.
 	// It's handy to have as reference here.
 	assertDeepEqual(t, "replicas", map[string]tokenRingReplicas{
-		strategy.strategyKey(): {
+		"myKeyspace": {
 			{orderedToken("05"), []*HostInfo{hosts[0], hosts[1], hosts[2]}},
 			{orderedToken("10"), []*HostInfo{hosts[1], hosts[2], hosts[3]}},
 			{orderedToken("15"), []*HostInfo{hosts[2], hosts[3], hosts[4]}},
@@ -539,12 +811,10 @@ func TestHostPolicy_TokenAware(t *testing.T) {
 
 	// now the token ring is configured
 	query.RoutingKey([]byte("23"))
-	iter = policy.Pick(newInternalQuery(query, nil))
+	iter = policy.Pick(query)
 	// first should be host with matching token from the local DC
-	expectHosts(t, "matching token from local DC", iter, "4")
-	// next are in non-deterministic order
-	expectHosts(t, "rest", iter, "0", "1", "2", "3", "5", "6", "7", "8", "9", "10", "11")
-	expectNoMoreHosts(t, iter)
+	iterCheck(t, iter, "4")
+	// next are in non deterministic order
 }
 
 // Tests of the token-aware host selection policy implementation with a
@@ -555,6 +825,9 @@ func TestHostPolicy_TokenAware_NetworkStrategy(t *testing.T) {
 	policy := TokenAwareHostPolicy(DCAwareRoundRobinPolicy("local"), NonLocalReplicasFallback())
 	policyInternal := policy.(*tokenAwareHostPolicy)
 	policyInternal.getKeyspaceName = func() string { return keyspace }
+	policyInternal.getKeyspaceMetadata = func(ks string) (*KeyspaceMetadata, error) {
+		return nil, errors.New("not initialized")
+	}
 
 	query := &Query{}
 	query.getKeyspace = func() string { return keyspace }
@@ -587,32 +860,29 @@ func TestHostPolicy_TokenAware_NetworkStrategy(t *testing.T) {
 		policy.AddHost(host)
 	}
 
-	keyspaceMeta := &KeyspaceMetadata{
-		Name:          keyspace,
-		StrategyClass: "NetworkTopologyStrategy",
-		StrategyOptions: map[string]interface{}{
-			"class":   "NetworkTopologyStrategy",
-			"local":   2,
-			"remote1": 2,
-			"remote2": 2,
-		},
-	}
-	strategy := getStrategy(keyspaceMeta, nopLoggerSingleton)
-	keyspaceMeta.placementStrategy = strategy
-	policyInternal.getSchemaMeta = func() *schemaMeta {
-		return &schemaMeta{
-			keyspaceMeta: map[string]*KeyspaceMetadata{
-				keyspace: keyspaceMeta,
-			},
-		}
-	}
-
 	policy.SetPartitioner("OrderedPartitioner")
+
+	policyInternal.getKeyspaceMetadata = func(keyspaceName string) (*KeyspaceMetadata, error) {
+		if keyspaceName != keyspace {
+			return nil, fmt.Errorf("unknown keyspace: %s", keyspaceName)
+		}
+		return &KeyspaceMetadata{
+			Name:          keyspace,
+			StrategyClass: "NetworkTopologyStrategy",
+			StrategyOptions: map[string]interface{}{
+				"class":   "NetworkTopologyStrategy",
+				"local":   2,
+				"remote1": 2,
+				"remote2": 2,
+			},
+		}, nil
+	}
+	policy.KeyspaceChanged(KeyspaceUpdateEvent{Keyspace: keyspace})
 
 	// The NetworkTopologyStrategy above should generate the following replicas.
 	// It's handy to have as reference here.
 	assertDeepEqual(t, "replicas", map[string]tokenRingReplicas{
-		strategy.strategyKey(): {
+		keyspace: {
 			{orderedToken("05"), []*HostInfo{hosts[0], hosts[1], hosts[2], hosts[3], hosts[4], hosts[5]}},
 			{orderedToken("10"), []*HostInfo{hosts[1], hosts[2], hosts[3], hosts[4], hosts[5], hosts[6]}},
 			{orderedToken("15"), []*HostInfo{hosts[2], hosts[3], hosts[4], hosts[5], hosts[6], hosts[7]}},
@@ -630,472 +900,13 @@ func TestHostPolicy_TokenAware_NetworkStrategy(t *testing.T) {
 
 	// now the token ring is configured
 	query.RoutingKey([]byte("18"))
-	iter = policy.Pick(newInternalQuery(query, nil))
+	iter = policy.Pick(query)
 	// first should be hosts with matching token from the local DC
-	expectHosts(t, "matching token from local DC", iter, "4", "7")
+	iterCheck(t, iter, "4")
+	iterCheck(t, iter, "7")
 	// rest should be hosts with matching token from remote DCs
-	expectHosts(t, "matching token from remote DCs", iter, "3", "5", "6", "8")
-	// followed by other hosts
-	expectHosts(t, "rest", iter, "0", "1", "2", "9", "10", "11")
-	expectNoMoreHosts(t, iter)
-}
-
-func TestHostPolicy_RackAwareRR(t *testing.T) {
-	p := RackAwareRoundRobinPolicy("local", "b")
-
-	hosts := [...]*HostInfo{
-		{hostId: "0", connectAddress: net.ParseIP("10.0.0.1"), dataCenter: "local", rack: "a"},
-		{hostId: "1", connectAddress: net.ParseIP("10.0.0.2"), dataCenter: "local", rack: "a"},
-		{hostId: "2", connectAddress: net.ParseIP("10.0.0.3"), dataCenter: "local", rack: "b"},
-		{hostId: "3", connectAddress: net.ParseIP("10.0.0.4"), dataCenter: "local", rack: "b"},
-		{hostId: "4", connectAddress: net.ParseIP("10.0.0.5"), dataCenter: "remote", rack: "a"},
-		{hostId: "5", connectAddress: net.ParseIP("10.0.0.6"), dataCenter: "remote", rack: "a"},
-		{hostId: "6", connectAddress: net.ParseIP("10.0.0.7"), dataCenter: "remote", rack: "b"},
-		{hostId: "7", connectAddress: net.ParseIP("10.0.0.8"), dataCenter: "remote", rack: "b"},
-	}
-
-	for _, host := range hosts {
-		p.AddHost(host)
-	}
-
-	it := p.Pick(nil)
-
-	// Must start with rack-local hosts
-	expectHosts(t, "rack-local hosts", it, "3", "2")
-	// Then dc-local hosts
-	expectHosts(t, "dc-local hosts", it, "0", "1")
-	// Then the remote hosts
-	expectHosts(t, "remote hosts", it, "4", "5", "6", "7")
-	expectNoMoreHosts(t, it)
-}
-
-// Tests of the token-aware host selection policy implementation with a
-// DC & Rack aware round-robin host selection policy fallback
-func TestHostPolicy_TokenAware_RackAware(t *testing.T) {
-	const keyspace = "myKeyspace"
-	policy := TokenAwareHostPolicy(RackAwareRoundRobinPolicy("local", "b"))
-	policyWithFallback := TokenAwareHostPolicy(RackAwareRoundRobinPolicy("local", "b"), NonLocalReplicasFallback())
-
-	policyInternal := policy.(*tokenAwareHostPolicy)
-	policyInternal.getKeyspaceName = func() string { return keyspace }
-
-	policyWithFallbackInternal := policyWithFallback.(*tokenAwareHostPolicy)
-	policyWithFallbackInternal.getKeyspaceName = policyInternal.getKeyspaceName
-	policyWithFallbackInternal.getKeyspaceMetadata = policyInternal.getKeyspaceMetadata
-
-	query := &Query{}
-	query.getKeyspace = func() string { return keyspace }
-
-	iter := policy.Pick(nil)
-	if iter == nil {
-		t.Fatal("host iterator was nil")
-	}
-	actual := iter()
-	if actual != nil {
-		t.Fatalf("expected nil from iterator, but was %v", actual)
-	}
-
-	// set the hosts
-	hosts := [...]*HostInfo{
-		{hostId: "0", connectAddress: net.IPv4(10, 0, 0, 1), tokens: []string{"05"}, dataCenter: "remote", rack: "a"},
-		{hostId: "1", connectAddress: net.IPv4(10, 0, 0, 2), tokens: []string{"10"}, dataCenter: "remote", rack: "b"},
-		{hostId: "2", connectAddress: net.IPv4(10, 0, 0, 3), tokens: []string{"15"}, dataCenter: "local", rack: "a"},
-		{hostId: "3", connectAddress: net.IPv4(10, 0, 0, 4), tokens: []string{"20"}, dataCenter: "local", rack: "b"},
-		{hostId: "4", connectAddress: net.IPv4(10, 0, 0, 5), tokens: []string{"25"}, dataCenter: "remote", rack: "a"},
-		{hostId: "5", connectAddress: net.IPv4(10, 0, 0, 6), tokens: []string{"30"}, dataCenter: "remote", rack: "b"},
-		{hostId: "6", connectAddress: net.IPv4(10, 0, 0, 7), tokens: []string{"35"}, dataCenter: "local", rack: "a"},
-		{hostId: "7", connectAddress: net.IPv4(10, 0, 0, 8), tokens: []string{"40"}, dataCenter: "local", rack: "b"},
-		{hostId: "8", connectAddress: net.IPv4(10, 0, 0, 9), tokens: []string{"45"}, dataCenter: "remote", rack: "a"},
-		{hostId: "9", connectAddress: net.IPv4(10, 0, 0, 10), tokens: []string{"50"}, dataCenter: "remote", rack: "b"},
-		{hostId: "10", connectAddress: net.IPv4(10, 0, 0, 11), tokens: []string{"55"}, dataCenter: "local", rack: "a"},
-		{hostId: "11", connectAddress: net.IPv4(10, 0, 0, 12), tokens: []string{"60"}, dataCenter: "local", rack: "b"},
-	}
-	for _, host := range hosts {
-		policy.AddHost(host)
-		policyWithFallback.AddHost(host)
-	}
-
-	// the token ring is not setup without the partitioner, but the fallback
-	// should work
-	if actual := policy.Pick(nil)(); actual == nil {
-		t.Fatal("expected to get host from fallback got nil")
-	}
-
-	query.RoutingKey([]byte("30"))
-	if actual := policy.Pick(newInternalQuery(query, nil))(); actual == nil {
-		t.Fatal("expected to get host from fallback got nil")
-	}
-
-	keyspaceMeta := &KeyspaceMetadata{
-		Name:          keyspace,
-		StrategyClass: "NetworkTopologyStrategy",
-		StrategyOptions: map[string]interface{}{
-			"class":  "NetworkTopologyStrategy",
-			"local":  2,
-			"remote": 2,
-		},
-	}
-	strategy := getStrategy(keyspaceMeta, nopLoggerSingleton)
-	keyspaceMeta.placementStrategy = strategy
-	policyInternal.getSchemaMeta = func() *schemaMeta {
-		return &schemaMeta{
-			keyspaceMeta: map[string]*KeyspaceMetadata{
-				keyspace: keyspaceMeta,
-			},
-		}
-	}
-	policyWithFallbackInternal.getSchemaMeta = policyInternal.getSchemaMeta
-
-	policy.SetPartitioner("OrderedPartitioner")
-	policyWithFallback.SetPartitioner("OrderedPartitioner")
-
-	// The NetworkTopologyStrategy above should generate the following replicas.
-	// It's handy to have as reference here.
-	assertDeepEqual(t, "replicas", map[string]tokenRingReplicas{
-		strategy.strategyKey(): {
-			{orderedToken("05"), []*HostInfo{hosts[0], hosts[1], hosts[2], hosts[3]}},
-			{orderedToken("10"), []*HostInfo{hosts[1], hosts[2], hosts[3], hosts[4]}},
-			{orderedToken("15"), []*HostInfo{hosts[2], hosts[3], hosts[4], hosts[5]}},
-			{orderedToken("20"), []*HostInfo{hosts[3], hosts[4], hosts[5], hosts[6]}},
-			{orderedToken("25"), []*HostInfo{hosts[4], hosts[5], hosts[6], hosts[7]}},
-			{orderedToken("30"), []*HostInfo{hosts[5], hosts[6], hosts[7], hosts[8]}},
-			{orderedToken("35"), []*HostInfo{hosts[6], hosts[7], hosts[8], hosts[9]}},
-			{orderedToken("40"), []*HostInfo{hosts[7], hosts[8], hosts[9], hosts[10]}},
-			{orderedToken("45"), []*HostInfo{hosts[8], hosts[9], hosts[10], hosts[11]}},
-			{orderedToken("50"), []*HostInfo{hosts[9], hosts[10], hosts[11], hosts[0]}},
-			{orderedToken("55"), []*HostInfo{hosts[10], hosts[11], hosts[0], hosts[1]}},
-			{orderedToken("60"), []*HostInfo{hosts[11], hosts[0], hosts[1], hosts[2]}},
-		},
-	}, policyInternal.getMetadataReadOnly().replicas)
-
-	query.RoutingKey([]byte("23"))
-
-	// now the token ring is configured
-	// Test the policy with fallback
-	iter = policyWithFallback.Pick(newInternalQuery(query, nil))
-
-	// first should be host with matching token from the local DC & rack
-	expectHosts(t, "matching token from local DC and local rack", iter, "7")
-	// next should be host with matching token from local DC and other rack
-	expectHosts(t, "matching token from local DC and non-local rack", iter, "6")
-	// next should be hosts with matching token from other DC, in any order
-	expectHosts(t, "matching token from non-local DC", iter, "4", "5")
-	// then the local DC & rack that didn't match the token
-	expectHosts(t, "non-matching token from local DC and local rack", iter, "3", "11")
-	// then the local DC & other rack that didn't match the token
-	expectHosts(t, "non-matching token from local DC and non-local rack", iter, "2", "10")
-	// finally, the other DC that didn't match the token
-	expectHosts(t, "non-matching token from non-local DC", iter, "0", "1", "8", "9")
-	expectNoMoreHosts(t, iter)
-
-	// Test the policy without fallback
-	iter = policy.Pick(newInternalQuery(query, nil))
-
-	// first should be host with matching token from the local DC & Rack
-	expectHosts(t, "matching token from local DC and local rack", iter, "7")
-	// next should be the other two hosts from local DC & rack
-	expectHosts(t, "non-matching token local DC and local rack", iter, "3", "11")
-	// then the three hosts from the local DC but other rack
-	expectHosts(t, "local DC, non-local rack", iter, "2", "6", "10")
-	// then the 6 hosts from the other DC
-	expectHosts(t, "non-local DC", iter, "0", "1", "4", "5", "8", "9")
-	expectNoMoreHosts(t, iter)
-}
-
-// TestHostPolicy_TokenAware_MultiKeyspace tests that token-aware routing works
-// for queries to keyspaces other than the session's default keyspace.
-func TestHostPolicy_TokenAware_MultiKeyspace(t *testing.T) {
-	const sessionKeyspace = "ks1"
-	const otherKeyspace = "ks2"
-
-	policy := TokenAwareHostPolicy(RoundRobinHostPolicy())
-	policyInternal := policy.(*tokenAwareHostPolicy)
-	createKeyspaceMeta := func(name string) *KeyspaceMetadata {
-		ksMeta := &KeyspaceMetadata{
-			Name:          name,
-			StrategyClass: "SimpleStrategy",
-			StrategyOptions: map[string]interface{}{
-				"class":              "SimpleStrategy",
-				"replication_factor": 2,
-			},
-		}
-		ksMeta.placementStrategy = getStrategy(ksMeta, nopLoggerSingleton)
-		return ksMeta
-	}
-
-	sessionKeyspaceMeta := createKeyspaceMeta(sessionKeyspace)
-	otherKeyspaceMeta := createKeyspaceMeta(otherKeyspace)
-	policyInternal.getSchemaMeta = func() *schemaMeta {
-		return &schemaMeta{
-			keyspaceMeta: map[string]*KeyspaceMetadata{
-				sessionKeyspace: sessionKeyspaceMeta,
-				otherKeyspace:   otherKeyspaceMeta,
-			},
-		}
-	}
-
-	policy.SetPartitioner("OrderedPartitioner")
-
-	// Add hosts with tokens
-	hosts := [...]*HostInfo{
-		{hostId: "0", connectAddress: net.IPv4(10, 0, 0, 1), tokens: []string{"00"}},
-		{hostId: "1", connectAddress: net.IPv4(10, 0, 0, 2), tokens: []string{"25"}},
-		{hostId: "2", connectAddress: net.IPv4(10, 0, 0, 3), tokens: []string{"50"}},
-		{hostId: "3", connectAddress: net.IPv4(10, 0, 0, 4), tokens: []string{"75"}},
-	}
-	for _, host := range &hosts {
-		policy.AddHost(host)
-	}
-
-	// Verify both keyspaces are populated after SetPartitioner
-	meta := policyInternal.getMetadataReadOnly()
-	if meta.replicas[sessionKeyspaceMeta.placementStrategy.strategyKey()] == nil {
-		t.Fatalf("session keyspace %s not in replica map", sessionKeyspace)
-	}
-	if meta.replicas[otherKeyspaceMeta.placementStrategy.strategyKey()] == nil {
-		t.Fatalf("other keyspace %s not in replica map", otherKeyspace)
-	}
-
-	t.Run("SessionKeyspace", func(t *testing.T) {
-		query := &Query{}
-		query.getKeyspace = func() string { return sessionKeyspace }
-		query.RoutingKey([]byte("20"))
-
-		iter := policy.Pick(newInternalQuery(query, nil))
-
-		// Should get token-aware hosts (token "20" → host with token "25")
-		expectHosts(t, "session keyspace token-aware", iter, "1", "2")
-		// Then fallback to remaining hosts
-		expectHosts(t, "session keyspace fallback", iter, "0", "3")
-		expectNoMoreHosts(t, iter)
-	})
-
-	t.Run("OtherKeyspace", func(t *testing.T) {
-		query := &Query{}
-		query.getKeyspace = func() string { return otherKeyspace }
-		query.RoutingKey([]byte("60"))
-
-		iter := policy.Pick(newInternalQuery(query, nil))
-
-		// Should get token-aware hosts for otherKeyspace
-		// token "60" → host with token "75"
-		expectHosts(t, "other keyspace token-aware", iter, "3", "0")
-		// Then fallback to remaining hosts
-		expectHosts(t, "other keyspace fallback", iter, "1", "2")
-		expectNoMoreHosts(t, iter)
-	})
-}
-
-// TestHostPolicy_TokenAware_MultiKeyspace_WithShuffleReplicas tests that
-// ShuffleReplicas option works correctly with proactively populated keyspaces.
-func TestHostPolicy_TokenAware_MultiKeyspace_WithShuffleReplicas(t *testing.T) {
-	const sessionKeyspace = "ks1"
-	const otherKeyspace = "ks2"
-
-	policy := TokenAwareHostPolicy(RoundRobinHostPolicy(), ShuffleReplicas())
-	policyInternal := policy.(*tokenAwareHostPolicy)
-
-	createKeyspaceMeta := func(name string) *KeyspaceMetadata {
-		ksMeta := &KeyspaceMetadata{
-			Name:          name,
-			StrategyClass: "SimpleStrategy",
-			StrategyOptions: map[string]interface{}{
-				"class":              "SimpleStrategy",
-				"replication_factor": 2,
-			},
-		}
-		ksMeta.placementStrategy = getStrategy(ksMeta, nopLoggerSingleton)
-		return ksMeta
-	}
-
-	sessionKeyspaceMeta := createKeyspaceMeta(sessionKeyspace)
-	otherKeyspaceMeta := createKeyspaceMeta(otherKeyspace)
-	policyInternal.getSchemaMeta = func() *schemaMeta {
-		return &schemaMeta{
-			keyspaceMeta: map[string]*KeyspaceMetadata{
-				sessionKeyspace: sessionKeyspaceMeta,
-				otherKeyspace:   otherKeyspaceMeta,
-			},
-		}
-	}
-
-	hosts := [...]*HostInfo{
-		{hostId: "0", connectAddress: net.IPv4(10, 0, 0, 1), tokens: []string{"00"}},
-		{hostId: "1", connectAddress: net.IPv4(10, 0, 0, 2), tokens: []string{"25"}},
-		{hostId: "2", connectAddress: net.IPv4(10, 0, 0, 3), tokens: []string{"50"}},
-		{hostId: "3", connectAddress: net.IPv4(10, 0, 0, 4), tokens: []string{"75"}},
-	}
-	for _, host := range &hosts {
-		policy.AddHost(host)
-	}
-	policy.SetPartitioner("OrderedPartitioner")
-
-	// Query other keyspace with shuffle replicas enabled
-	query := &Query{}
-	query.getKeyspace = func() string { return otherKeyspace }
-	query.RoutingKey([]byte("20"))
-
-	// Execute Pick multiple times and collect first hosts
-	firstHosts := make(map[string]int)
-	for i := 0; i < 100; i++ {
-		iter := policy.Pick(newInternalQuery(query, nil))
-		host := iter()
-		if host != nil {
-			firstHosts[host.Info().HostID()]++
-		}
-	}
-
-	// With ShuffleReplicas, we should see distribution across replicas
-	// (not always the same host)
-	if len(firstHosts) < 2 {
-		t.Errorf("expected distribution across replicas with ShuffleReplicas, got only %d unique first hosts", len(firstHosts))
-	}
-}
-
-// TestHostPolicy_TokenAware_TopologyChangeUpdatesAllKeyspaces verifies that
-// when hosts are added or removed, replica maps are updated for ALL keyspaces,
-// not just the session keyspace.
-func TestHostPolicy_TokenAware_TopologyChangeUpdatesAllKeyspaces(t *testing.T) {
-	const sessionKeyspace = "ks1"
-	const otherKeyspace = "ks2"
-
-	policy := TokenAwareHostPolicy(RoundRobinHostPolicy())
-	policyInternal := policy.(*tokenAwareHostPolicy)
-
-	createKeyspaceMeta := func(name string) *KeyspaceMetadata {
-		ksMeta := &KeyspaceMetadata{
-			Name:          name,
-			StrategyClass: "SimpleStrategy",
-			StrategyOptions: map[string]interface{}{
-				"class":              "SimpleStrategy",
-				"replication_factor": 2,
-			},
-		}
-		ksMeta.placementStrategy = getStrategy(ksMeta, nopLoggerSingleton)
-		return ksMeta
-	}
-
-	sessionKeyspaceMeta := createKeyspaceMeta(sessionKeyspace)
-	otherKeyspaceMeta := createKeyspaceMeta(otherKeyspace)
-	policyInternal.getSchemaMeta = func() *schemaMeta {
-		return &schemaMeta{
-			keyspaceMeta: map[string]*KeyspaceMetadata{
-				sessionKeyspace: sessionKeyspaceMeta,
-				otherKeyspace:   otherKeyspaceMeta,
-			},
-		}
-	}
-
-	// Initial topology: 3 hosts
-	initialHosts := []*HostInfo{
-		{hostId: "0", connectAddress: net.IPv4(10, 0, 0, 1), tokens: []string{"00"}},
-		{hostId: "1", connectAddress: net.IPv4(10, 0, 0, 2), tokens: []string{"33"}},
-		{hostId: "2", connectAddress: net.IPv4(10, 0, 0, 3), tokens: []string{"66"}},
-	}
-	for _, host := range initialHosts {
-		policy.AddHost(host)
-	}
-	policy.SetPartitioner("OrderedPartitioner")
-
-	// Verify both keyspaces are in replica map
-	meta := policyInternal.getMetadataReadOnly()
-	if meta.replicas[sessionKeyspaceMeta.placementStrategy.strategyKey()] == nil {
-		t.Fatalf("session keyspace %s not in replica map", sessionKeyspace)
-	}
-	if meta.replicas[otherKeyspaceMeta.placementStrategy.strategyKey()] == nil {
-		t.Fatalf("other keyspace %s not in replica map", otherKeyspace)
-	}
-
-	// Test: Add a new host (topology change)
-	t.Run("AddHost", func(t *testing.T) {
-		newHost := &HostInfo{
-			hostId:         "3",
-			connectAddress: net.IPv4(10, 0, 0, 4),
-			tokens:         []string{"99"},
-		}
-		policy.AddHost(newHost)
-
-		// Verify: Get updated metadata
-		metaAfterAdd := policyInternal.getMetadataReadOnly()
-
-		// Check session keyspace was updated
-		updatedSessionReplicas := metaAfterAdd.replicas[sessionKeyspaceMeta.placementStrategy.strategyKey()]
-		if updatedSessionReplicas == nil {
-			t.Fatal("session keyspace replica map is nil after AddHost")
-		}
-
-		// Check other keyspace was updated
-		updatedOtherReplicas := metaAfterAdd.replicas[otherKeyspaceMeta.placementStrategy.strategyKey()]
-		if updatedOtherReplicas == nil {
-			t.Fatal("other keyspace replica map is nil after AddHost")
-		}
-
-		//Verify replica maps include new host
-		// For session keyspace
-		sessionHasNewHost := false
-		for _, ht := range updatedSessionReplicas {
-			for _, host := range ht.hosts {
-				if host.HostID() == "3" {
-					sessionHasNewHost = true
-					break
-				}
-			}
-		}
-		if !sessionHasNewHost {
-			t.Error("session keyspace replica map does not include new host")
-		}
-
-		// For other keyspace
-		otherHasNewHost := false
-		for _, ht := range updatedOtherReplicas {
-			for _, host := range ht.hosts {
-				if host.HostID() == "3" {
-					otherHasNewHost = true
-					break
-				}
-			}
-		}
-		if !otherHasNewHost {
-			t.Error("other keyspace replica map does not include new host - replica map is STALE after topology change!")
-		}
-	})
-
-	// Test: Remove host
-	t.Run("RemoveHost", func(t *testing.T) {
-		// Remove one of the original hosts
-		hostToRemove := initialHosts[0]
-		policy.RemoveHost(hostToRemove)
-
-		metaAfterRemove := policyInternal.getMetadataReadOnly()
-
-		// Verify session keyspace updated
-		sessionReplicasAfterRemove := metaAfterRemove.replicas[sessionKeyspaceMeta.placementStrategy.strategyKey()]
-		sessionStillHasHost := false
-		for _, ht := range sessionReplicasAfterRemove {
-			for _, host := range ht.hosts {
-				if host.HostID() == "0" {
-					sessionStillHasHost = true
-					break
-				}
-			}
-		}
-		if sessionStillHasHost {
-			t.Error("session keyspace still has removed host in replica map")
-		}
-
-		// Verify other keyspace updated
-		otherReplicasAfterRemove := metaAfterRemove.replicas[otherKeyspaceMeta.placementStrategy.strategyKey()]
-		otherStillHasHost := false
-		for _, ht := range otherReplicasAfterRemove {
-			for _, host := range ht.hosts {
-				if host.HostID() == "0" {
-					otherStillHasHost = true
-					break
-				}
-			}
-		}
-		if otherStillHasHost {
-			t.Error("other keyspace still has removed host in replica map - STALE after topology change!")
-		}
-	})
+	iterCheck(t, iter, "3")
+	iterCheck(t, iter, "5")
+	iterCheck(t, iter, "6")
+	iterCheck(t, iter, "8")
 }

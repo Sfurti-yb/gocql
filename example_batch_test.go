@@ -29,7 +29,11 @@ import (
 	"fmt"
 	"log"
 
+<<<<<<< HEAD
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
+=======
+	"github.com/yugabyte/gocql"
+>>>>>>> 7176f17 (Added Tests for PartitionAwarePolicy)
 )
 
 // Example_batch demonstrates how to execute a batch of statements.

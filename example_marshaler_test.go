@@ -31,7 +31,11 @@ import (
 	"strconv"
 	"strings"
 
+<<<<<<< HEAD
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
+=======
+	"github.com/yugabyte/gocql"
+>>>>>>> 7176f17 (Added Tests for PartitionAwarePolicy)
 )
 
 // MyMarshaler implements Marshaler and Unmarshaler.

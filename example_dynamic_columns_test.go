@@ -32,7 +32,11 @@ import (
 	"reflect"
 	"text/tabwriter"
 
+<<<<<<< HEAD
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
+=======
+	"github.com/yugabyte/gocql"
+>>>>>>> 7176f17 (Added Tests for PartitionAwarePolicy)
 )
 
 // Example_dynamicColumns demonstrates how to handle dynamic column list.

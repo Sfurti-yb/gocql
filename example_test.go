@@ -1,27 +1,3 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-/*
- * Content before git sha 34fdeebefcbf183ed7f916f931aa0586fdaa1b40
- * Copyright (c) 2016, The Gocql authors,
- * provided under the BSD-3-Clause License.
- * See the NOTICE file distributed with this work for additional information.
- */
-
 package gocql_test
 
 import (
@@ -29,7 +5,7 @@ import (
 	"fmt"
 	"log"
 
-	gocql "github.com/apache/cassandra-gocql-driver/v2"
+	"github.com/yugabyte/gocql"
 )
 
 func Example() {
@@ -52,7 +28,7 @@ func Example() {
 
 	// insert a tweet
 	if err := session.Query(`INSERT INTO tweet (timeline, id, text) VALUES (?, ?, ?)`,
-		"me", gocql.TimeUUID(), "hello world").ExecContext(ctx); err != nil {
+		"me", gocql.TimeUUID(), "hello world").WithContext(ctx).Exec(); err != nil {
 		log.Fatal(err)
 	}
 
@@ -63,7 +39,7 @@ func Example() {
 	 * the value 'me'. The secondary index that we created earlier will be
 	 * used for optimizing the search */
 	if err := session.Query(`SELECT id, text FROM tweet WHERE timeline = ? LIMIT 1`,
-		"me").Consistency(gocql.One).ScanContext(ctx, &id, &text); err != nil {
+		"me").WithContext(ctx).Consistency(gocql.One).Scan(&id, &text); err != nil {
 		log.Fatal(err)
 	}
 	fmt.Println("Tweet:", id, text)
@@ -71,7 +47,7 @@ func Example() {
 
 	// list all tweets
 	scanner := session.Query(`SELECT id, text FROM tweet WHERE timeline = ?`,
-		"me").IterContext(ctx).Scanner()
+		"me").WithContext(ctx).Iter().Scanner()
 	for scanner.Next() {
 		err = scanner.Scan(&id, &text)
 		if err != nil {
