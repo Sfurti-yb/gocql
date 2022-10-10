@@ -488,8 +488,7 @@ type ringDescriber struct {
 	mu              sync.Mutex
 	prevHosts       []*HostInfo
 	prevPartitioner string
-
-	currHostsyb []*HostInfo
+	currYbHosts     []*HostInfo
 }
 
 // Returns true if we are using system_schema.keyspaces instead of system.schema_keyspaces
@@ -830,7 +829,7 @@ func (r *ringDescriber) GetHosts() ([]*HostInfo, string, error) {
 		return r.prevHosts, r.prevPartitioner, err
 	}
 
-	r.currHostsyb = hosts
+	r.currYbHosts = hosts
 
 	hosts := append([]*HostInfo{localHost}, peerHosts...)
 	var partitioner string
@@ -847,7 +846,7 @@ func (r *ringDescriber) getHostInfoFromIp(ip net.IP) (*HostInfo, error) {
 
 	var host *HostInfo
 
-	for _, k := range r.currHostsyb {
+	for _, k := range r.currYbHosts {
 		if k.ConnectAddress().Equal(ip) {
 			host = k
 			break
@@ -855,7 +854,7 @@ func (r *ringDescriber) getHostInfoFromIp(ip net.IP) (*HostInfo, error) {
 	}
 
 	if host == nil {
-		return nil, errors.New("host not found in peers table")
+		return nil, errors.New("host not found in system.peers table")
 	}
 	return host, nil
 }
