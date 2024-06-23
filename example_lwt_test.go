@@ -30,10 +30,14 @@ import (
 	"log"
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
 =======
 	"github.com/yugabyte/gocql"
 >>>>>>> 7176f17 (Added Tests for PartitionAwarePolicy)
+=======
+	gocql "github.com/gocql/gocql"
+>>>>>>> 974fa12 (Donation to Apache Cassandra and ASF)
 )
 
 // ExampleQuery_MapScanCAS demonstrates how to execute a single-statement lightweight transaction.

@@ -24,29 +24,39 @@
 
 package gocql
 
-import "runtime/debug"
+import (
+	"bytes"
+	"testing"
 
-const (
-	mainModule = "github.com/gocql/gocql"
+	"github.com/golang/snappy"
 )
 
-var driverName string
+func TestSnappyCompressor(t *testing.T) {
+	c := SnappyCompressor{}
+	if c.Name() != "snappy" {
+		t.Fatalf("expected name to be 'snappy', got %v", c.Name())
+	}
 
-var driverVersion string
+	str := "My Test String"
+	//Test Encoding
+	expected := snappy.Encode(nil, []byte(str))
+	if res, err := c.Encode([]byte(str)); err != nil {
+		t.Fatalf("failed to encode '%v' with error %v", str, err)
+	} else if bytes.Compare(expected, res) != 0 {
+		t.Fatal("failed to match the expected encoded value with the result encoded value.")
+	}
 
-func init() {
-	buildInfo, ok := debug.ReadBuildInfo()
-	if ok {
-		for _, d := range buildInfo.Deps {
-			if d.Path == mainModule {
-				driverName = mainModule
-				driverVersion = d.Version
-				if d.Replace != nil {
-					driverName = d.Replace.Path
-					driverVersion = d.Replace.Version
-				}
-				break
-			}
-		}
+	val, err := c.Encode([]byte(str))
+	if err != nil {
+		t.Fatalf("failed to encode '%v' with error '%v'", str, err)
+	}
+
+	//Test Decoding
+	if expected, err := snappy.Decode(nil, val); err != nil {
+		t.Fatalf("failed to decode '%v' with error %v", val, err)
+	} else if res, err := c.Decode(val); err != nil {
+		t.Fatalf("failed to decode '%v' with error %v", val, err)
+	} else if bytes.Compare(expected, res) != 0 {
+		t.Fatal("failed to match the expected decoded value with the result decoded value.")
 	}
 }

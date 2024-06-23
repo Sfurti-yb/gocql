@@ -124,6 +124,7 @@ That said, the point of writing tests is to provide a safety net to catch regres
 
 ### Sign Off Procedure
 
+<<<<<<< HEAD
 A Pull Request needs +1s from two committers before it can be merged (or one +1 if the author is a committer).
 
 As stated earlier, suitable test coverage will increase the likelihood that a PR will be approved and merged. If your change has no test coverage, or looks like it may have wider implications for the health and stability of the library, the reviewers may elect to refer the change to other members of the community to achieve consensus before proceeding. Therefore, the tighter and cleaner your patch is, the quicker it will go through the review process.
@@ -135,3 +136,19 @@ gocql is a low level wire driver for Cassandra CQL. By and large, we would like 
 Inevitably you will come across something that could be implemented in a higher layer, save for a minor change to the core API. In this instance, please strike up a conversation in the Cassandra community. 
 
 Chances are we will understand what you are trying to achieve and will try to accommodate this in a maintainable way.
+=======
+Generally speaking, a pull request can get merged by any one of the project's committers. If your change is minor, chances are that one team member will just go ahead and merge it there and then. As stated earlier, suitable test coverage will increase the likelihood that a single reviewer will assess and merge your change. If your change has no test coverage, or looks like it may have wider implications for the health and stability of the library, the reviewer may elect to refer the change to another team member to achieve consensus before proceeding. Therefore, the tighter and cleaner your patch is, the quicker it will go through the review process.
+
+### Supported Features
+
+gocql is a low level wire driver for Cassandra CQL. By and large, we would like to keep the functional scope of the library as narrow as possible. We think that gocql should be tight and focused, and we will be naturally skeptical of things that could just as easily be implemented in a higher layer. Inevitably you will come across something that could be implemented in a higher layer, save for a minor change to the core API. In this instance, please strike up a conversation in the Cassandra community. Chances are we will understand what you are trying to achieve and will try to accommodate this in a maintainable way.
+
+## Officially Supported Server Versions
+
+Currently, the officially supported versions of the Cassandra server include:
+
+* 1.2.18
+* 2.0.9
+
+Chances are that gocql will work with many other versions. If you would like us to support a particular version of Cassandra, please start a conversation about what version you'd like us to consider. We are more likely to accept a new version if you help out by extending the regression suite to cover the new version to be supported.
+>>>>>>> 974fa12 (Donation to Apache Cassandra and ASF)

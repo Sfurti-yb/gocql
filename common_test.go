@@ -1,6 +1,9 @@
+<<<<<<< HEAD
 //go:build all || unit || integration || ccm || cassandra
 // +build all unit integration ccm cassandra
 
+=======
+>>>>>>> 974fa12 (Donation to Apache Cassandra and ASF)
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file

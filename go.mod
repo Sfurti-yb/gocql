@@ -15,6 +15,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
+<<<<<<< HEAD
 module github.com/yugabyte/gocql
 
 require (
@@ -26,6 +27,9 @@ require (
 	go.uber.org/zap v1.27.0
 	gopkg.in/inf.v0 v0.9.1
 )
+=======
+module github.com/gocql/gocql
+>>>>>>> 974fa12 (Donation to Apache Cassandra and ASF)
 
 require (
 	github.com/bitly/go-hostpool v0.0.0-20171023180738-a3a6125de932 // indirect
