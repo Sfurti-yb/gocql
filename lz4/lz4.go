@@ -27,7 +27,6 @@ package lz4
 import (
 	"encoding/binary"
 	"fmt"
-
 	"github.com/pierrec/lz4/v4"
 )
 

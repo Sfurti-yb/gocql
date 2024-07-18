@@ -31,6 +31,7 @@
 package lz4
 
 import (
+	"github.com/pierrec/lz4/v4"
 	"testing"
 
 	"github.com/pierrec/lz4/v4"
