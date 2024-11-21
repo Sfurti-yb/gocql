@@ -436,6 +436,7 @@ func (s *Session) Query(stmt string, values ...interface{}) *Query {
 	qry.session = s
 	qry.stmt = stmt
 	qry.values = values
+	qry.hostID = ""
 	qry.defaultsFromSession()
 	return qry
 }
@@ -929,6 +930,10 @@ type Query struct {
 
 	// routingInfo is a pointer because Query can be copied and copyable struct can't hold a mutex.
 	routingInfo *queryRoutingInfo
+
+	// hostID specifies the host on which the query should be executed.
+	// If it is empty, then the host is picked by HostSelectionPolicy
+	hostID string
 }
 
 type queryRoutingInfo struct {
@@ -1467,6 +1472,20 @@ func (q *Query) borrowForExecution() {
 
 func (q *Query) releaseAfterExecution() {
 	q.decRefCount()
+}
+
+// SetHostID allows to define the host the query should be executed against. If the
+// host was filtered or otherwise unavailable, then the query will error. If an empty
+// string is sent, the default behavior, using the configured HostSelectionPolicy will
+// be used. A hostID can be obtained from HostInfo.HostID() after calling GetHosts().
+func (q *Query) SetHostID(hostID string) *Query {
+	q.hostID = hostID
+	return q
+}
+
+// GetHostID returns id of the host on which query should be executed.
+func (q *Query) GetHostID() string {
+	return q.hostID
 }
 
 // Iter represents an iterator that can be used to iterate over all rows that
@@ -2191,6 +2210,11 @@ func (b *Batch) releaseAfterExecution() {
 	// that would race with speculative executions.
 }
 
+// GetHostID satisfies ExecutableQuery interface but does noop.
+func (b *Batch) GetHostID() string {
+	return ""
+}
+
 type BatchType byte
 
 const (
@@ -2321,6 +2345,11 @@ func (t *traceWriter) Trace(traceId []byte) {
 	if err := iter.Close(); err != nil {
 		fmt.Fprintln(t.w, "Error:", err)
 	}
+}
+
+// GetHosts return a list of hosts in the ring the driver knows of.
+func (s *Session) GetHosts() []*HostInfo {
+	return s.ring.allHosts()
 }
 
 type ObservedQuery struct {
