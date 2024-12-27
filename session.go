@@ -765,7 +765,7 @@ func (s *Session) ExecuteBatchCAS(batch *Batch, dest ...interface{}) (applied bo
 		iter.Scan(&applied)
 	}
 
-	return applied, iter, nil
+	return applied, iter, iter.err
 }
 
 // MapExecuteBatchCAS executes a batch operation much like ExecuteBatchCAS,
@@ -778,8 +778,14 @@ func (s *Session) MapExecuteBatchCAS(batch *Batch, dest map[string]interface{}) 
 		return false, nil, err
 	}
 	iter.MapScan(dest)
-	applied = dest["[applied]"].(bool)
-	delete(dest, "[applied]")
+	if iter.err != nil {
+		return false, iter, iter.err
+	}
+	// check if [applied] was returned, otherwise it might not be CAS
+	if _, ok := dest["[applied]"]; ok {
+		applied = dest["[applied]"].(bool)
+		delete(dest, "[applied]")
+	}
 
 	// we usually close here, but instead of closing, just returin an error
 	// if MapScan failed. Although Close just returns err, using Close
@@ -1414,8 +1420,14 @@ func (q *Query) MapScanCAS(dest map[string]interface{}) (applied bool, err error
 		return false, err
 	}
 	iter.MapScan(dest)
-	applied = dest["[applied]"].(bool)
-	delete(dest, "[applied]")
+	if iter.err != nil {
+		return false, iter.err
+	}
+	// check if [applied] was returned, otherwise it might not be CAS
+	if _, ok := dest["[applied]"]; ok {
+		applied = dest["[applied]"].(bool)
+		delete(dest, "[applied]")
+	}
 
 	return applied, iter.Close()
 }
