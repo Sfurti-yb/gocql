@@ -42,7 +42,217 @@ func dereference(i interface{}) interface{} {
 	return reflect.Indirect(reflect.ValueOf(i)).Interface()
 }
 
-// TupleColumnName will return the column name of a tuple value in a column named
+func getCassandraBaseType(name string) Type {
+	switch name {
+	case "ascii":
+		return TypeAscii
+	case "bigint":
+		return TypeBigInt
+	case "blob":
+		return TypeBlob
+	case "boolean":
+		return TypeBoolean
+	case "counter":
+		return TypeCounter
+	case "date":
+		return TypeDate
+	case "decimal":
+		return TypeDecimal
+	case "double":
+		return TypeDouble
+	case "duration":
+		return TypeDuration
+	case "float":
+		return TypeFloat
+	case "int":
+		return TypeInt
+	case "smallint":
+		return TypeSmallInt
+	case "tinyint":
+		return TypeTinyInt
+	case "time":
+		return TypeTime
+	case "timestamp":
+		return TypeTimestamp
+	case "uuid":
+		return TypeUUID
+	case "varchar":
+		return TypeVarchar
+	case "text":
+		return TypeText
+	case "varint":
+		return TypeVarint
+	case "timeuuid":
+		return TypeTimeUUID
+	case "inet":
+		return TypeInet
+	case "MapType":
+		return TypeMap
+	case "ListType":
+		return TypeList
+	case "SetType":
+		return TypeSet
+	case "TupleType":
+		return TypeTuple
+	default:
+		return TypeCustom
+	}
+}
+
+func getCassandraType(name string, logger StdLogger) TypeInfo {
+	if strings.HasPrefix(name, "frozen<") {
+		return getCassandraType(strings.TrimPrefix(name[:len(name)-1], "frozen<"), logger)
+	} else if strings.HasPrefix(name, "set<") {
+		return CollectionType{
+			NativeType: NativeType{typ: TypeSet},
+			Elem:       getCassandraType(strings.TrimPrefix(name[:len(name)-1], "set<"), logger),
+		}
+	} else if strings.HasPrefix(name, "list<") {
+		return CollectionType{
+			NativeType: NativeType{typ: TypeList},
+			Elem:       getCassandraType(strings.TrimPrefix(name[:len(name)-1], "list<"), logger),
+		}
+	} else if strings.HasPrefix(name, "map<") {
+		names := splitCompositeTypes(strings.TrimPrefix(name[:len(name)-1], "map<"))
+		if len(names) != 2 {
+			logger.Printf("Error parsing map type, it has %d subelements, expecting 2\n", len(names))
+			return NativeType{
+				typ: TypeCustom,
+			}
+		}
+		return CollectionType{
+			NativeType: NativeType{typ: TypeMap},
+			Key:        getCassandraType(names[0], logger),
+			Elem:       getCassandraType(names[1], logger),
+		}
+	} else if strings.HasPrefix(name, "tuple<") {
+		names := splitCompositeTypes(strings.TrimPrefix(name[:len(name)-1], "tuple<"))
+		types := make([]TypeInfo, len(names))
+
+		for i, name := range names {
+			types[i] = getCassandraType(name, logger)
+		}
+
+		return TupleTypeInfo{
+			NativeType: NativeType{typ: TypeTuple},
+			Elems:      types,
+		}
+	} else {
+		return NativeType{
+			typ: getCassandraBaseType(name),
+		}
+	}
+}
+
+func splitCompositeTypes(name string) []string {
+	if !strings.Contains(name, "<") {
+		return strings.Split(name, ", ")
+	}
+	var parts []string
+	lessCount := 0
+	segment := ""
+	for _, char := range name {
+		if char == ',' && lessCount == 0 {
+			if segment != "" {
+				parts = append(parts, strings.TrimSpace(segment))
+			}
+			segment = ""
+			continue
+		}
+		segment += string(char)
+		if char == '<' {
+			lessCount++
+		} else if char == '>' {
+			lessCount--
+		}
+	}
+	if segment != "" {
+		parts = append(parts, strings.TrimSpace(segment))
+	}
+	return parts
+}
+
+func apacheToCassandraType(t string) string {
+	t = strings.Replace(t, apacheCassandraTypePrefix, "", -1)
+	t = strings.Replace(t, "(", "<", -1)
+	t = strings.Replace(t, ")", ">", -1)
+	types := strings.FieldsFunc(t, func(r rune) bool {
+		return r == '<' || r == '>' || r == ','
+	})
+	for _, typ := range types {
+		t = strings.Replace(t, typ, getApacheCassandraType(typ).String(), -1)
+	}
+	// This is done so it exactly matches what Cassandra returns
+	return strings.Replace(t, ",", ", ", -1)
+}
+
+func getApacheCassandraType(class string) Type {
+	switch strings.TrimPrefix(class, apacheCassandraTypePrefix) {
+	case "AsciiType":
+		return TypeAscii
+	case "LongType":
+		return TypeBigInt
+	case "BytesType":
+		return TypeBlob
+	case "BooleanType":
+		return TypeBoolean
+	case "CounterColumnType":
+		return TypeCounter
+	case "DecimalType":
+		return TypeDecimal
+	case "DoubleType":
+		return TypeDouble
+	case "FloatType":
+		return TypeFloat
+	case "Int32Type":
+		return TypeInt
+	case "ShortType":
+		return TypeSmallInt
+	case "ByteType":
+		return TypeTinyInt
+	case "TimeType":
+		return TypeTime
+	case "DateType", "TimestampType":
+		return TypeTimestamp
+	case "UUIDType", "LexicalUUIDType":
+		return TypeUUID
+	case "UTF8Type":
+		return TypeVarchar
+	case "IntegerType":
+		return TypeVarint
+	case "TimeUUIDType":
+		return TypeTimeUUID
+	case "InetAddressType":
+		return TypeInet
+	case "MapType":
+		return TypeMap
+	case "ListType":
+		return TypeList
+	case "SetType":
+		return TypeSet
+	case "TupleType":
+		return TypeTuple
+	case "DurationType":
+		return TypeDuration
+	default:
+		return TypeCustom
+	}
+}
+
+func (r *RowData) rowMap(m map[string]interface{}) {
+	for i, column := range r.Columns {
+		val := dereference(r.Values[i])
+		if valVal := reflect.ValueOf(val); valVal.Kind() == reflect.Slice && !valVal.IsNil() {
+			valCopy := reflect.MakeSlice(valVal.Type(), valVal.Len(), valVal.Cap())
+			reflect.Copy(valCopy, valVal)
+			m[column] = valCopy.Interface()
+		} else {
+			m[column] = val
+		}
+	}
+}
+
+// TupeColumnName will return the column name of a tuple value in a column named
 // c at index n. It should be used if a specific element within a tuple is needed
 // to be extracted from a map returned from SliceMap or MapScan.
 func TupleColumnName(c string, n int) string {

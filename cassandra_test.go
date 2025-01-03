@@ -32,7 +32,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/stretchr/testify/require"
 	"io"
 	"math"
 	"math/big"
