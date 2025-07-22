@@ -44,6 +44,8 @@ Installation
 
     go get github.com/yugabyte/gocql
 
+**Note:** Version `2.0.0` introduces breaking changes. See the [upgrade guide](https://github.com/apache/cassandra-gocql-driver/blob/trunk/UPGRADE_GUIDE.md) for upgrade instructions from `1.x`.
+
 
 Features
 --------
