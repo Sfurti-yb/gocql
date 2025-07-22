@@ -124,6 +124,8 @@ type RetryableQuery interface {
 	Context() context.Context
 }
 
+// RetryType represents the type of retry that should be performed by the retry policy.
+// Available types: Retry, RetryNextHost, Ignore, Rethrow.
 type RetryType uint16
 
 const (
@@ -267,6 +269,9 @@ func (e *ExponentialBackoffRetryPolicy) napTime(attempts int) time.Duration {
 	return getExponentialTime(e.Min, e.Max, attempts)
 }
 
+// HostStateNotifier is an interface for notifying about host state changes.
+// It allows host selection policies to be informed when hosts are added, removed,
+// or change their availability status.
 type HostStateNotifier interface {
 	AddHost(host *HostInfo)
 	RemoveHost(host *HostInfo)
@@ -274,6 +279,8 @@ type HostStateNotifier interface {
 	HostDown(host *HostInfo)
 }
 
+// KeyspaceUpdateEvent represents a keyspace change event.
+// It contains information about which keyspace changed and what type of change occurred.
 type KeyspaceUpdateEvent struct {
 	Keyspace string
 	Change   string
@@ -1247,16 +1254,22 @@ func (e *ExponentialReconnectionPolicy) GetMaxRetries() int {
 	return e.MaxRetries
 }
 
+// SpeculativeExecutionPolicy defines the interface for speculative execution policies.
+// These policies determine when and how many speculative queries to execute.
 type SpeculativeExecutionPolicy interface {
 	Attempts() int
 	Delay() time.Duration
 }
 
+// NonSpeculativeExecution is a policy that disables speculative execution.
+// It implements SpeculativeExecutionPolicy with zero attempts.
 type NonSpeculativeExecution struct{}
 
 func (sp NonSpeculativeExecution) Attempts() int        { return 0 } // No additional attempts
 func (sp NonSpeculativeExecution) Delay() time.Duration { return 1 } // The delay. Must be positive to be used in a ticker.
 
+// SimpleSpeculativeExecution is a policy that enables speculative execution
+// with a fixed number of attempts and delay.
 type SimpleSpeculativeExecution struct {
 	NumAttempts  int
 	TimeoutDelay time.Duration
