@@ -15,15 +15,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for session ready, host state, topology change and schema changes custom listeners (CASSGO-101)
 - Add Session.AllKeyspaceMetadata() (CASSGO-109)
 
+### Changed
+
+- Use protocol downgrading approach during protocol negotiation (CASSGO-97)
+- TokenAwareHostPolicy now populates replica maps for non-default keyspaces (CASSGO-104)
+- Add options to shuffle replicas for token-aware policy and log warning when the default behavior is used (CASSGO-106)
+
 ### Fixed
 
 - Prevent panic with queries during session init (CASSGO-92)
 - Return correct values from RowData (CASSGO-95)
 - Prevent setting a compression flag in a frame header when native proto v5 is being used (CASSGO-98)
-- Use protocol downgrading approach during protocol negotiation (CASSGO-97)
 - Prevent panic iin compileMetadata() when final func is not defined for an aggregate (CASSGO-105)
 - Framer drops error silently (CASSGO-108)
-- TokenAwareHostPolicy now populates replica maps for non-default keyspaces (CASSGO-104)
 
 ## [2.0.0]
 
