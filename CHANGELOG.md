@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TokenAwareHostPolicy now populates replica maps for non-default keyspaces (CASSGO-104)
 - Add options to shuffle replicas for token-aware policy and log warning when the default behavior is used (CASSGO-106)
 
+### Changed
+
+- Bump Go version support from 1.22 and 1.23 to 1.25 and 1.26 (CASSGO-110)
+
 ### Fixed
 
 - Prevent panic with queries during session init (CASSGO-92)
