@@ -123,7 +123,6 @@ func (s *Session) handleEvent(framer *framer) {
 	case *schemaChangeKeyspace, *schemaChangeFunction,
 		*schemaChangeTable, *schemaChangeAggregate, *schemaChangeType:
 		s.schemaDescriber.debounceRefreshSchemaMetadata()
-		s.hostSource.getClusterPartitionInfo()
 	case *topologyChangeEventFrame, *statusChangeEventFrame:
 		s.nodeEvents.debounce(frame)
 	default:
