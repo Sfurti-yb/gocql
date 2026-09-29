@@ -29,7 +29,21 @@ In general, the Cassandra community will focus on supporting the current and pre
 Installation
 ------------
 
-    go get github.com/yugabyte/gocql
+    go get github.com/yugabyte/gocql/v2
+
+The import path carries the `/v2` suffix, as Go requires for a module at major
+version 2 or above. Upgrading from `v1.6.0-yb-1` is not a version bump: because
+`github.com/yugabyte/gocql` and `github.com/yugabyte/gocql/v2` are distinct
+modules, `go get -u` will not move you across, and every import of the driver has
+to be updated:
+
+```diff
+-import "github.com/yugabyte/gocql"
++import "github.com/yugabyte/gocql/v2"
+```
+
+Types from the two do not interoperate, so any code with a `*gocql.Session` in
+its signature must be updated in the same change.
 
 **Note:** Version `2.0.0` introduces breaking changes. See the [upgrade guide](https://github.com/apache/cassandra-gocql-driver/blob/trunk/UPGRADE_GUIDE.md) for upgrade instructions from `1.x`.
 
@@ -124,7 +138,73 @@ statement.
 Example
 -------
 
-See package documentation for examples.
+```go
+/* Before you execute the program, Launch `cqlsh` and execute:
+create keyspace example with replication = { 'class' : 'SimpleStrategy', 'replication_factor' : 1 };
+create table example.tweet(timeline text, id UUID, text text, PRIMARY KEY(id));
+create index on example.tweet(timeline);
+*/
+package main
+
+import (
+	"fmt"
+	"log"
+
+	"github.com/yugabyte/gocql/v2"
+)
+
+func main() {
+	// connect to the cluster
+	cluster := gocql.NewCluster("192.168.1.1", "192.168.1.2", "192.168.1.3")
+	cluster.Keyspace = "example"
+	cluster.Consistency = gocql.Quorum
+	session, _ := cluster.CreateSession()
+	defer session.Close()
+
+	// insert a tweet
+	if err := session.Query(`INSERT INTO tweet (timeline, id, text) VALUES (?, ?, ?)`,
+		"me", gocql.TimeUUID(), "hello world").Exec(); err != nil {
+		log.Fatal(err)
+	}
+
+	var id gocql.UUID
+	var text string
+
+	/* Search for a specific set of records whose 'timeline' column matches
+	 * the value 'me'. The secondary index that we created earlier will be
+	 * used for optimizing the search */
+	if err := session.Query(`SELECT id, text FROM tweet WHERE timeline = ? LIMIT 1`,
+		"me").Consistency(gocql.One).Scan(&id, &text); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("Tweet:", id, text)
+
+	// list all tweets
+	iter := session.Query(`SELECT id, text FROM tweet WHERE timeline = ?`, "me").Iter()
+	for iter.Scan(&id, &text) {
+		fmt.Println("Tweet:", id, text)
+	}
+	if err := iter.Close(); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+
+Authentication 
+-------
+
+```go
+cluster := gocql.NewCluster("192.168.1.1", "192.168.1.2", "192.168.1.3")
+cluster.Authenticator = gocql.PasswordAuthenticator{
+	Username: "user",
+	Password: "password"
+}
+cluster.Keyspace = "example"
+cluster.Consistency = gocql.Quorum
+session, _ := cluster.CreateSession()
+defer session.Close()
+```
 
 Data Binding
 ------------
