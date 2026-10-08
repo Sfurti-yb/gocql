@@ -1957,7 +1957,7 @@ func (c *Conn) query(ctx context.Context, statement string, values ...interface{
 	q.disableSkipMetadata = true
 
 	// we want to keep the query on this connection
-	return q.iterInternal(c, ctx)
+	return q.execute(ctx, c)
 }
 
 func (c *Conn) querySystemPeers(ctx context.Context, version cassVersion) *Iter {

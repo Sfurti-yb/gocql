@@ -381,10 +381,9 @@ func (q *internalQuery) Attempts() int {
 
 func (q *internalQuery) attempt(keyspace string, end, start time.Time, iter *Iter, host *HostInfo) {
 	latency := end.Sub(start)
-	attempt := q.metrics.attempt(latency)
+	attempt, metricsForHost := q.metrics.attempt(1, latency, host, q.qryOpts.observer != nil)
 
 	if q.qryOpts.observer != nil {
-		metricsForHost := q.hostMetricsManager.attempt(latency, host)
 		q.qryOpts.observer.ObserveQuery(q.qryOpts.context, ObservedQuery{
 			Keyspace:  keyspace,
 			Statement: q.qryOpts.stmt,
@@ -396,7 +395,6 @@ func (q *internalQuery) attempt(keyspace string, end, start time.Time, iter *Ite
 			Metrics:   metricsForHost,
 			Err:       iter.err,
 			Attempt:   attempt,
-			Query:     q.originalQuery,
 		})
 	}
 }
@@ -445,9 +443,8 @@ func (q *internalQuery) Keyspace() string {
 		return q.qryOpts.getKeyspace()
 	}
 
-	qrKs := q.routingInfo.getKeyspace()
-	if qrKs != "" {
-		return qrKs
+	if q.routingInfo.keyspace != "" {
+		return q.routingInfo.keyspace
 	}
 	if q.qryOpts.keyspace != "" {
 		return q.qryOpts.keyspace
@@ -462,7 +459,7 @@ func (q *internalQuery) Keyspace() string {
 }
 
 func (q *internalQuery) Table() string {
-	return q.routingInfo.getTable()
+	return q.routingInfo.table
 }
 
 func (q *internalQuery) IsIdempotent() bool {
