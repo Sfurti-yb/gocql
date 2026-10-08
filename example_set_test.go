@@ -26,14 +26,10 @@ package gocql_test
 
 import (
 	"fmt"
-<<<<<<< HEAD
-	"github.com/yugabyte/gocql"
-=======
->>>>>>> 974fa12 (Donation to Apache Cassandra and ASF)
 	"log"
 	"sort"
 
-	gocql "github.com/apache/cassandra-gocql-driver/v2"
+	"github.com/yugabyte/gocql"
 )
 
 // Example_set demonstrates how to use sets.

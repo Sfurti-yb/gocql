@@ -29,7 +29,7 @@ import (
 	"log"
 	"sync"
 
-	gocql "github.com/apache/cassandra-gocql-driver/v2"
+	gocql "github.com/yugabyte/gocql"
 )
 
 // SchemaStateListener implements schema listener interfaces and SessionReadyListener

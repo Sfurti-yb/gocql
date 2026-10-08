@@ -1,9 +1,5 @@
-<<<<<<< HEAD
 //go:build all || unit
 // +build all unit
-
-=======
->>>>>>> 974fa12 (Donation to Apache Cassandra and ASF)
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -38,8 +34,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/apache/cassandra-gocql-driver/v2/lz4"
-	"github.com/apache/cassandra-gocql-driver/v2/snappy"
+	"github.com/yugabyte/gocql/lz4"
+	"github.com/yugabyte/gocql/snappy"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

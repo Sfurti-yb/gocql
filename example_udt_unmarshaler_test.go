@@ -27,13 +27,7 @@ package gocql_test
 import (
 	"context"
 	"fmt"
-<<<<<<< HEAD
 	"github.com/yugabyte/gocql"
-=======
->>>>>>> 974fa12 (Donation to Apache Cassandra and ASF)
-	"log"
-
-	gocql "github.com/apache/cassandra-gocql-driver/v2"
 )
 
 // MyUDTUnmarshaler implements UDTUnmarshaler.

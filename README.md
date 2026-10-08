@@ -1,25 +1,12 @@
 Apache Cassandra GoCQL Driver
 =====
 
-<<<<<<< HEAD
 Package gocql implements a fast and robust Cassandra client for the
 Go programming language.
 
 Documentation: https://docs.yugabyte.com/latest/develop/build-apps/go/
 
 Discussions: https://www.yugabyte.com/slack
-=======
-[!Join the chat at https://the-asf.slack.com/archives/C05LPRVNZV1](https://the-asf.slack.com/archives/C05LPRVNZV1)
-![go build](https://github.com/apache/cassandra-gocql-driver/actions/workflows/main.yml/badge.svg)
-[![GoDoc](https://godoc.org/github.com/gocql/gocql?status.svg)](https://godoc.org/github.com/gocql/gocql)
-
-Package gocql implements a fast and robust Cassandra client for the
-Go programming language.
-
-Project Website: https://cassandra.apache.org<br>
-API documentation: https://godoc.org/github.com/gocql/gocql<br>
-Discussions: https://cassandra.apache.org/_/community.html#discussions
->>>>>>> 974fa12 (Donation to Apache Cassandra and ASF)
 
 Supported Versions
 ------------------
@@ -179,7 +166,6 @@ SEO
 ---
 
 For some reason, when you Google `golang cassandra`, this project doesn't feature very highly in the result list. But if you Google `go cassandra`, then we're a bit higher up the list. So this is note to try to convince Google that golang is an alias for Go.
-<<<<<<< HEAD
 
 License
 -------
@@ -190,5 +176,3 @@ Licensed under the Apache License, Version 2.0 (the "License"); you may not use 
 http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.
-=======
->>>>>>> 974fa12 (Donation to Apache Cassandra and ASF)

@@ -15,33 +15,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-<<<<<<< HEAD
 module github.com/yugabyte/gocql
 
 require (
-	github.com/golang/snappy v0.0.3
+	github.com/golang/snappy v1.0.0
 	github.com/hailocab/go-hostpool v0.0.0-20160125115350-e80d13ce29ed
-	github.com/pierrec/lz4/v4 v4.1.8
-	github.com/rs/zerolog v1.34.0
+	github.com/pierrec/lz4/v4 v4.1.33
+	github.com/rs/zerolog v1.35.1
 	github.com/stretchr/testify v1.9.0
-	go.uber.org/zap v1.27.0
+	go.uber.org/zap v1.28.0
 	gopkg.in/inf.v0 v0.9.1
 )
-=======
-module github.com/gocql/gocql
->>>>>>> 974fa12 (Donation to Apache Cassandra and ASF)
 
 require (
 	github.com/bitly/go-hostpool v0.0.0-20171023180738-a3a6125de932 // indirect
 	github.com/bmizerany/assert v0.0.0-20160611221934-b7ed37b82869 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
-	github.com/mattn/go-colorable v0.1.13 // indirect
-	github.com/mattn/go-isatty v0.0.19 // indirect
+	github.com/mattn/go-colorable v0.1.14 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
-	golang.org/x/sys v0.12.0 // indirect
+	golang.org/x/sys v0.29.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-go 1.19
+go 1.23

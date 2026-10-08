@@ -29,15 +29,7 @@ import (
 	"fmt"
 	"log"
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-	gocql "github.com/apache/cassandra-gocql-driver/v2"
-=======
 	"github.com/yugabyte/gocql"
->>>>>>> 7176f17 (Added Tests for PartitionAwarePolicy)
-=======
-	gocql "github.com/gocql/gocql"
->>>>>>> 974fa12 (Donation to Apache Cassandra and ASF)
 )
 
 // ExampleBatch_MapExecCAS demonstrates how to execute a batch lightweight transaction.

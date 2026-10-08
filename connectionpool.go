@@ -522,14 +522,8 @@ func (pool *hostConnPool) fillingStopped(err error) {
 
 	// if we errored and the size is now zero, make sure the host is marked as down
 	// see https://github.com/apache/cassandra-gocql-driver/issues/1614
-<<<<<<< HEAD
 	pool.logger.Debug("Logging number of connections of pool after filling stopped.",
 		NewLogFieldIP("host_addr", host.ConnectAddress()), NewLogFieldString("host_id", host.HostID()), NewLogFieldInt("count", count))
-=======
-	if gocqlDebug {
-		pool.logger.Printf("gocql: conns of pool after stopped %q: %v\n", host.ConnectAddress(), count)
-	}
->>>>>>> 974fa12 (Donation to Apache Cassandra and ASF)
 	if err != nil && count == 0 {
 		if pool.session.cfg.ConvictionPolicy.AddFailure(err, host) {
 			pool.session.handleNodeDown(host.ConnectAddress(), port)

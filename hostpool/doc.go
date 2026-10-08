@@ -32,8 +32,8 @@
 //
 //	import (
 //		"github.com/hailocab/go-hostpool"
-//		"github.com/apache/cassandra-gocql-driver/v2"
-//		"github.com/apache/cassandra-gocql-driver/v2/hostpool"
+//		"github.com/yugabyte/gocql"
+//		"github.com/yugabyte/gocql/hostpool"
 //	)
 //
 //	// Create an epsilon greedy pool for adaptive load balancing

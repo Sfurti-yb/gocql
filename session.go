@@ -61,6 +61,12 @@ type Session struct {
 	// event handlers
 	nodeEvents *eventDebouncer
 
+	// host state and topology change listeners
+	hostListeners internalHostListeners
+
+	// schema change listeners
+	schemaListeners internalSchemaListeners
+
 	// ring metadata
 	useSystemSchema           bool
 	hasAggregatesAndFunctions bool
@@ -80,7 +86,7 @@ type Session struct {
 	// you can use initialized() to read the value.
 	isInitialized bool
 
-	logger StdLogger
+	logger StructuredLogger
 }
 
 var queryPool = &sync.Pool{
@@ -995,6 +1001,55 @@ func (q *Query) AddLatency(l int64, host *HostInfo) {
 	q.metrics.attempt(0, time.Duration(l)*time.Nanosecond, host, false)
 }
 
+type hostMetricsManager interface {
+	attempt(addLatency time.Duration, host *HostInfo) *hostMetrics
+}
+
+type hostMetricsManagerImpl struct {
+	l sync.RWMutex
+	m map[string]*hostMetrics
+}
+
+func newHostMetricsManager() *hostMetricsManagerImpl {
+	return &hostMetricsManagerImpl{m: make(map[string]*hostMetrics)}
+}
+
+// preFilledHostMetricsMetricsManager initializes new hostMetrics based on per-host supplied data.
+func preFilledHostMetricsMetricsManager(m map[string]*hostMetrics) *hostMetricsManagerImpl {
+	return &hostMetricsManagerImpl{m: m}
+}
+
+// hostMetricsLocked gets or creates host metrics for given host.
+// It must be called only while holding qm.l lock.
+func (qm *hostMetricsManagerImpl) hostMetricsLocked(host *HostInfo) *hostMetrics {
+	metrics, exists := qm.m[host.ConnectAddress().String()]
+	if !exists {
+		// if the host is not in the map, it means it's been accessed for the first time
+		metrics = &hostMetrics{}
+		qm.m[host.ConnectAddress().String()] = metrics
+	}
+
+	return metrics
+}
+
+func (qm *hostMetricsManagerImpl) attempt(addLatency time.Duration, host *HostInfo) *hostMetrics {
+	qm.l.Lock()
+	updateHostMetrics := qm.hostMetricsLocked(host)
+	updateHostMetrics.Attempts += 1
+	updateHostMetrics.TotalLatency += addLatency.Nanoseconds()
+	qm.l.Unlock()
+	return updateHostMetrics
+}
+
+var emptyHostMetricsManager = &emptyHostMetricsManagerImpl{}
+
+type emptyHostMetricsManagerImpl struct {
+}
+
+func (qm *emptyHostMetricsManagerImpl) attempt(_ time.Duration, _ *HostInfo) *hostMetrics {
+	return nil
+}
+
 // Consistency sets the consistency level for this query. If no consistency
 // level have been set, the default consistency level of the cluster
 // is used.
@@ -1231,8 +1286,11 @@ func (q *Query) GetRoutingKeyYb() ([]byte, error) {
 }
 
 func (q *Query) shouldPrepare() bool {
+	return shouldPrepare(q.stmt)
+}
 
-	stmt := strings.TrimLeftFunc(strings.TrimRightFunc(q.stmt, func(r rune) bool {
+func shouldPrepare(s string) bool {
+	stmt := strings.TrimLeftFunc(strings.TrimRightFunc(s, func(r rune) bool {
 		return unicode.IsSpace(r) || r == ';'
 	}), unicode.IsSpace)
 
@@ -1240,13 +1298,13 @@ func (q *Query) shouldPrepare() bool {
 	if n := strings.IndexFunc(stmt, unicode.IsSpace); n >= 0 {
 		stmtType = strings.ToLower(stmt[:n])
 	}
-	if stmtType == "begin" || stmtType == "start" {
+	if stmtType == "begin" {
 		if n := strings.LastIndexFunc(stmt, unicode.IsSpace); n >= 0 {
 			stmtType = strings.ToLower(stmt[n+1:])
 		}
 	}
 	switch stmtType {
-	case "select", "insert", "update", "delete", "batch", "transaction", "commit":
+	case "select", "insert", "update", "delete", "batch":
 		return true
 	}
 	return false
@@ -1505,6 +1563,11 @@ type Iter struct {
 	numRows int
 	next    *nextIter
 	host    *HostInfo
+	metrics *queryMetrics
+
+	getKeyspace func() string
+	keyspace    string
+	routingInfo *queryRoutingInfo
 
 	framer *framer
 	closed int32
@@ -1518,6 +1581,49 @@ func (iter *Iter) Host() *HostInfo {
 // Columns returns the name and type of the selected columns.
 func (iter *Iter) Columns() []ColumnInfo {
 	return iter.meta.columns
+}
+
+func newErrIter(err error, metrics *queryMetrics, keyspace string, routingInfo *queryRoutingInfo, getKeyspace func() string) *Iter {
+	iter := newIter(metrics, keyspace, routingInfo, getKeyspace)
+	iter.err = err
+	return iter
+}
+
+func newIter(metrics *queryMetrics, keyspace string, routingInfo *queryRoutingInfo, getKeyspace func() string) *Iter {
+	return &Iter{metrics: metrics, keyspace: keyspace, routingInfo: routingInfo, getKeyspace: getKeyspace}
+}
+
+// Attempts returns the number of times the statement was executed.
+func (iter *Iter) Attempts() int {
+	return iter.metrics.attempts()
+}
+
+// Latency returns the average amount of nanoseconds per attempt of the statement.
+func (iter *Iter) Latency() int64 {
+	return iter.metrics.latency()
+}
+
+// Keyspace returns the keyspace the statement was executed against if the driver could determine it.
+func (iter *Iter) Keyspace() string {
+	if iter.getKeyspace != nil {
+		return iter.getKeyspace()
+	}
+
+	if iter.routingInfo != nil {
+		if ks := iter.routingInfo.getKeyspace(); ks != "" {
+			return ks
+		}
+	}
+
+	return iter.keyspace
+}
+
+// Table returns name of the table the statement was executed against if the driver could determine it.
+func (iter *Iter) Table() string {
+	if iter.routingInfo != nil {
+		return iter.routingInfo.getTable()
+	}
+	return ""
 }
 
 type Scanner interface {
@@ -1770,7 +1876,7 @@ func (iter *Iter) NumRows() int {
 // nextIter holds state for fetching a single page in an iterator.
 // single page might be attempted multiple times due to retries.
 type nextIter struct {
-	qry   *Query
+	q     *internalQuery
 	pos   int
 	oncea sync.Once
 	once  sync.Once
