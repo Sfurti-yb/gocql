@@ -903,9 +903,11 @@ type Query struct {
 	stmt                  string
 	values                []interface{}
 	cons                  Consistency
+	initialConsistency    Consistency
 	pageSize              int
 	routingKey            []byte
 	pageState             []byte
+	initialPageState      []byte
 	prefetch              float64
 	trace                 Tracer
 	observer              QueryObserver
@@ -939,6 +941,9 @@ type Query struct {
 	// hostID specifies the host on which the query should be executed.
 	// If it is empty, then the host is picked by HostSelectionPolicy
 	hostID string
+
+	keyspace          string
+	nowInSecondsValue *int
 }
 
 type queryRoutingInfo struct {

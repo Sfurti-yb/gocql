@@ -46,6 +46,7 @@ type ExecutableStatement interface {
 	Table() string
 	IsIdempotent() bool
 	GetHostID() string
+	GetConsistency() Consistency
 	Statement() Statement
 }
 
