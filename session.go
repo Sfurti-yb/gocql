@@ -697,12 +697,174 @@ func (s *Session) routingKeyInfo(ctx context.Context, stmt string) (*routingKeyI
 func (b *Batch) execute(ctx context.Context, conn *Conn) *Iter {
 	return conn.executeBatch(ctx, b)
 }
+func (s *Session) routingStatementMetadata(ctx context.Context, stmt string, keyspace string) (*StatementMetadata, error) {
+	if keyspace == "" {
+		keyspace = s.cfg.Keyspace
+	}
+
+	key := keyspace + stmt
+	s.routingKeyInfoCache.mu.Lock()
+
+	// Using here keyspace + stmt as a cache key because
+	// the query keyspace could be overridden via SetKeyspace
+	entry, cached := s.routingKeyInfoCache.lru.Get(key)
+	if cached {
+		// done accessing the cache
+		s.routingKeyInfoCache.mu.Unlock()
+		// the entry is an inflight struct similar to that used by
+		// Conn to prepare statements
+		inflight := entry.(*inflightCachedEntry)
+
+		// wait for any inflight work
+		inflight.wg.Wait()
+
+		if inflight.err != nil {
+			return nil, inflight.err
+		}
+
+		key, _ := inflight.value.(*StatementMetadata)
+
+		return key, nil
+	}
+
+	// create a new inflight entry while the data is created
+	inflight := new(inflightCachedEntry)
+	inflight.wg.Add(1)
+	defer inflight.wg.Done()
+	s.routingKeyInfoCache.lru.Add(key, inflight)
+	s.routingKeyInfoCache.mu.Unlock()
+
+	var meta StatementMetadata
+	meta, inflight.err = s.StatementMetadata(ctx, stmt, keyspace)
+	if inflight.err != nil {
+		// don't cache this error
+		s.routingKeyInfoCache.Remove(key)
+		return nil, inflight.err
+	}
+
+	inflight.value = &meta
+
+	return &meta, nil
+}
+
+// StatementMetadata represents various metadata about a statement.
+type StatementMetadata struct {
+	// Keyspace is the keyspace of the table for the statement.
+	Keyspace string
+
+	// Table is the table of the statement.
+	Table string
+
+	// BindColumns are columns bound to the statement.
+	BindColumns []ColumnInfo
+
+	// PKBindColumnIndexes are the indexes of the BindColumns that correspond to
+	// partition key columns. If this is empty then one or more columns in the
+	// partition key were not bound to the statement.
+	PKBindColumnIndexes []int
+
+	// ResultColumns are the columns that are returned by the statement.
+	ResultColumns []ColumnInfo
+}
+
+// StatementMetadata returns metadata for a statement. If keyspace is empty,
+// the session's keyspace is used.
+func (s *Session) StatementMetadata(ctx context.Context, stmt, keyspace string) (StatementMetadata, error) {
+	if keyspace == "" {
+		keyspace = s.cfg.Keyspace
+	}
+
+	conn := s.getConn()
+	if conn == nil {
+		return StatementMetadata{}, ErrNoConnections
+	}
+
+	// get the query info for the statement
+	info, err := conn.prepareStatement(ctx, stmt, nil, keyspace)
+	if err != nil {
+		// TODO: it would be nice to mark hosts here but as we are not using the policies
+		// to fetch hosts we cant and we can't use the policies because they might
+		// require token awareness which requires this method
+		return StatementMetadata{}, err
+	}
+
+	if info.request.keyspace != "" {
+		keyspace = info.request.keyspace
+	}
+
+	meta := StatementMetadata{
+		Keyspace:            keyspace,
+		Table:               info.request.table,
+		BindColumns:         info.request.columns,
+		PKBindColumnIndexes: info.request.pkeyColumns,
+		ResultColumns:       info.response.columns,
+	}
+
+	// if it is protocol < v4 then we need to calculate the routing key info
+	if !info.request.supportsPKeyColumns && len(info.request.columns) > 0 {
+		keyspaceMetadata, err := s.KeyspaceMetadata(meta.Keyspace)
+		if err != nil {
+			// don't cache this error
+			return StatementMetadata{}, err
+		}
+
+		tableMetadata, found := keyspaceMetadata.Tables[meta.Table]
+		if !found {
+			// unlikely that the statement could be prepared and the metadata for
+			// the table couldn't be found, but this may indicate either a bug
+			// in the metadata code, or that the table was just dropped.
+			return StatementMetadata{}, ErrNoMetadata
+		}
+
+		meta.PKBindColumnIndexes = make([]int, len(tableMetadata.PartitionKey))
+		for keyIndex, keyColumn := range tableMetadata.PartitionKey {
+			// set an indicator for checking if the mapping is missing
+			meta.PKBindColumnIndexes[keyIndex] = -1
+
+			// find the column in the query info
+			for colIndex, boundColumn := range info.request.columns {
+				if keyColumn.Name == boundColumn.Name {
+					// there may be many such bound columns, pick the first
+					meta.PKBindColumnIndexes[keyIndex] = colIndex
+					break
+				}
+			}
+
+			if meta.PKBindColumnIndexes[keyIndex] == -1 {
+				// the partition key column is not bound to the statement
+				meta.PKBindColumnIndexes = nil
+				break
+			}
+		}
+	}
+	return meta, nil
+}
 
 // Exec executes a batch operation and returns nil if successful
 // otherwise an error is returned describing the failure.
 func (b *Batch) Exec() error {
 	iter := b.session.executeBatch(b)
 	return iter.Close()
+}
+
+// ExecContext executes the batch with the provided context and returns nil if successful
+func (b *Batch) ExecContext(ctx context.Context) error {
+	return b.IterContext(ctx).Close()
+}
+
+// Iter executes a batch operation and returns an Iter object
+func (b *Batch) Iter() *Iter {
+	return b.IterContext(b.context)
+}
+
+// IterContext executes a batch operation with the provided context and returns an Iter object
+func (b *Batch) IterContext(ctx context.Context) *Iter {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	batch := *b
+	batch.context = ctx
+	return batch.session.executeBatch(&batch)
 }
 
 func (s *Session) executeBatch(batch *Batch) *Iter {
@@ -1411,6 +1573,24 @@ func (q *Query) Exec() error {
 	return q.Iter().Close()
 }
 
+// ExecContext executes the query with the provided context without returning any rows.
+func (q *Query) ExecContext(ctx context.Context) error {
+	return q.IterContext(ctx).Close()
+}
+
+// IterContext executes the query with the provided context and returns an iterator capable of iterating over all results.
+func (q *Query) IterContext(ctx context.Context) *Iter {
+	if isUseStatement(q.stmt) {
+		return &Iter{err: ErrUseStmt}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	qry := *q
+	qry.context = ctx
+	return qry.session.executeQuery(&qry)
+}
+
 func isUseStatement(stmt string) bool {
 	if len(stmt) < 3 {
 		return false
@@ -1926,6 +2106,7 @@ type Batch struct {
 	keyspace              string
 	metrics               *queryMetrics
 	firstBoundStmtIdxYB   int //to keep track of which statement in the batch is the first bound statement
+	nowInSeconds          *int
 
 	// routingInfo is a pointer because Query can be copied and copyable struct can't hold a mutex.
 	routingInfo *queryRoutingInfo
@@ -2323,6 +2504,49 @@ func createRoutingKeyYb(routingKeyInfo *routingKeyInfo, values []interface{}) ([
 	}
 	routingKey := buf.Bytes()
 	return routingKey, nil
+}
+
+// createRoutingKeyFromMetadata creates a routing key from StatementMetadata
+func createRoutingKeyFromMetadata(meta *StatementMetadata, values []interface{}) ([]byte, error) {
+	if meta == nil || len(meta.PKBindColumnIndexes) == 0 {
+		return nil, nil
+	}
+
+	if len(values) != len(meta.BindColumns) {
+		return nil, errors.New("gocql: number of values does not match the number of bind columns")
+	}
+
+	if len(meta.PKBindColumnIndexes) == 1 {
+		// single column routing key
+		routingKey, err := Marshal(
+			meta.BindColumns[meta.PKBindColumnIndexes[0]].TypeInfo,
+			values[meta.PKBindColumnIndexes[0]],
+		)
+		if err != nil {
+			return nil, err
+		}
+		return routingKey, nil
+	}
+
+	// composite routing key
+	buf := bytes.NewBuffer(make([]byte, 0, 256))
+	lenBuf := make([]byte, 2)
+	for i := range meta.PKBindColumnIndexes {
+		encoded, err := Marshal(
+			meta.BindColumns[meta.PKBindColumnIndexes[i]].TypeInfo,
+			values[meta.PKBindColumnIndexes[i]],
+		)
+		if err != nil {
+			return nil, err
+		}
+		// first write the length of the encoded value as a 16-bit big endian integer
+		binary.BigEndian.PutUint16(lenBuf, uint16(len(encoded)))
+		buf.Write(lenBuf)
+		// then write the encoded value and a null byte to separate the values
+		buf.Write(encoded)
+		buf.WriteByte(0x00)
+	}
+	return buf.Bytes(), nil
 }
 
 func (b *Batch) borrowForExecution() {

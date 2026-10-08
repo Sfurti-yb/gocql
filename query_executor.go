@@ -435,7 +435,7 @@ func (q *internalQuery) GetRoutingKey() ([]byte, error) {
 		q.routingInfo.table = meta.Table
 		q.routingInfo.mu.Unlock()
 	}
-	return createRoutingKey(meta, q.qryOpts.values)
+	return createRoutingKeyFromMetadata(meta, q.qryOpts.values)
 }
 
 func (q *internalQuery) Keyspace() string {
@@ -589,13 +589,11 @@ func (b *internalBatch) Attempts() int {
 
 func (b *internalBatch) attempt(keyspace string, end, start time.Time, iter *Iter, host *HostInfo) {
 	latency := end.Sub(start)
-	attempt := b.metrics.attempt(latency)
+	attempt, metricsForHost := b.metrics.attempt(1, latency, host, b.batchOpts.observer != nil)
 
 	if b.batchOpts.observer == nil {
 		return
 	}
-
-	metricsForHost := b.hostMetricsManager.attempt(latency, host)
 
 	statements := make([]string, len(b.batchOpts.entries))
 	values := make([][]interface{}, len(b.batchOpts.entries))
@@ -616,7 +614,6 @@ func (b *internalBatch) attempt(keyspace string, end, start time.Time, iter *Ite
 		Metrics: metricsForHost,
 		Err:     iter.err,
 		Attempt: attempt,
-		Batch:   b.originalBatch,
 	})
 }
 
@@ -655,7 +652,7 @@ func (b *internalBatch) GetRoutingKey() ([]byte, error) {
 		b.routingInfo.mu.Unlock()
 	}
 
-	return createRoutingKey(meta, entry.Args)
+	return createRoutingKeyFromMetadata(meta, entry.Args)
 }
 
 func (b *internalBatch) Keyspace() string {
@@ -663,7 +660,7 @@ func (b *internalBatch) Keyspace() string {
 }
 
 func (b *internalBatch) Table() string {
-	return b.routingInfo.getTable()
+	return b.routingInfo.table
 }
 
 func (b *internalBatch) IsIdempotent() bool {
